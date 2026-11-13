@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- moon disc -->
+    <path android:pathData="M52,54m-26,0a26,26 0,1 1,52 0a26,26 0,1 1,-52 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30" android:startY="30"
+                android:endX="76" android:endY="80">
+                <item android:color="#FFFAFAFA" android:offset="0" />
+                <item android:color="#FFA1A1AA" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- cut-out that turns the disc into a crescent (same colour as the icon background) -->
+    <path
+        android:pathData="M63,43m-22,0a22,22 0,1 1,44 0a22,22 0,1 1,-44 0"
+        android:fillColor="#FF09090B" />
+    <!-- two small stars -->
+    <path android:pathData="M76,40m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" android:fillColor="#FFE4E4E7" />
+    <path android:pathData="M70,31m-1.4,0a1.4,1.4 0,1 1,2.8 0a1.4,1.4 0,1 1,-2.8 0" android:fillColor="#B3E4E4E7" />
+</vector>
