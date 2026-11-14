@@ -21,8 +21,8 @@ android {
         applicationId = "com.interpreter.live"   // change this if you publish under your own name
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 4
+        versionName = "1.3"
     }
 
     buildTypes {
@@ -43,5 +43,5 @@ dependencies {
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.alphacephei:vosk-android:0.3.75")
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
 }

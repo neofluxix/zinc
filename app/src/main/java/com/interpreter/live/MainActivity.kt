@@ -26,6 +26,11 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prevHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { java.io.File(filesDir, "crash.txt").writeText(e.stackTraceToString().take(1500)) } catch (_: Throwable) { }
+            prevHandler?.uncaughtException(t, e)
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         web = WebView(this).apply { setBackgroundColor(Color.parseColor("#09090B")) }

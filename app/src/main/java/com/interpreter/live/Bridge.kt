@@ -47,7 +47,25 @@ class Bridge(private val act: Activity, private val web: WebView) {
     init {
         tts = TextToSpeech(act) { }
         Packs.listener = Packs.Listener { t, d -> emit(t, d) }
+        // A native crash while loading the built-in voice engine leaves this marker behind; switch that engine off.
+        if (loadMarker.exists()) { offFlag.writeText("1"); loadMarker.delete() }
     }
+
+    private val loadMarker get() = java.io.File(act.filesDir, "vosk_loading")
+    private val offFlag get() = java.io.File(act.filesDir, "vosk_disabled")
+    private fun voskDisabled() = offFlag.exists()
+
+    @JavascriptInterface
+    fun lastCrash(): String {
+        val sb = StringBuilder()
+        val f = java.io.File(act.filesDir, "crash.txt")
+        if (f.exists()) { sb.append(f.readText().take(600)); f.delete() }
+        if (voskDisabled()) sb.append(" | built-in voice engine was switched off after a native crash")
+        return sb.toString()
+    }
+
+    @JavascriptInterface
+    fun enableVosk() { offFlag.delete(); loadMarker.delete() }
 
     private fun emit(type: String, data: String) {
         val js = "window.nativeEvent&&window.nativeEvent(${JSONObject.quote(type)},${JSONObject.quote(data)})"
@@ -82,7 +100,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
     // ---------------------------------------------------------------- listening
 
     @JavascriptInterface
-    fun listen(tag: String, silenceMs: Int) {
+    fun listen(tag: String, silenceMs: Int, pref: String) {
         main.post {
             vosk?.let { try { it.shutdown() } catch (_: Exception) { } }
             vosk = null
@@ -93,7 +111,15 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 return@post
             }
             val key = Packs.voskKey(tag)
-            if (Packs.voskReady(act, key)) listenVosk(key, tag, silenceMs) else listenSystem(tag, silenceMs)
+            val vOk = Packs.voskReady(act, key) && !voskDisabled()
+            val gOk = Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act)
+            when {
+                pref == "zinc" && vOk -> listenVosk(key, tag, silenceMs)
+                pref == "google" -> if (gOk) listenGoogle(tag, silenceMs, null) else listenSystem(tag, silenceMs)
+                gOk -> listenGoogle(tag, silenceMs, if (vOk) key else null)
+                vOk -> listenVosk(key, tag, silenceMs)
+                else -> listenSystem(tag, silenceMs)
+            }
         }
     }
 
@@ -101,20 +127,27 @@ class Bridge(private val act: Activity, private val web: WebView) {
     fun stopListening() { main.post { vosk?.stop(); recognizer?.stopListening() } }
 
     private fun listenVosk(key: String, tag: String, silenceMs: Int) {
+        if (voskDisabled()) {
+            emit("error", "The built-in voice engine crashed on this phone and is switched off.")
+            return
+        }
         loader.execute {
             try {
-                if (!voskModels.containsKey(key)) emit("engine", "Loading voice engine…")
-                val model = voskModels.getOrPut(key) {
-                    Model(Packs.voskPath(act, key) ?: throw IllegalStateException("voice pack is missing"))
-                }
-                emit("engine", "")
+                emit("which", "zinc")
+                val path = Packs.voskPath(act, key) ?: throw IllegalStateException("voice pack is missing")
+                if (!voskModels.containsKey(path)) emit("engine", "Loading voice engine…")
+                loadMarker.writeText("1")
+                val model = voskModels.getOrPut(path) { Model(path) }
                 val svc = SpeechService(Recognizer(model, 16000.0f), 16000.0f)
+                loadMarker.delete()
+                emit("engine", "")
                 main.post {
                     try { runVosk(svc, tag, silenceMs) }
-                    catch (e: Exception) { emit("error", "Couldn't start the microphone: ${e.message}") }
+                    catch (t: Throwable) { emit("error", "Couldn't start the microphone: ${t.message}") }
                 }
-            } catch (e: Exception) {
-                emit("error", "Voice engine failed: ${e.message}")
+            } catch (t: Throwable) {
+                loadMarker.delete()
+                emit("error", "Voice engine failed: ${t.javaClass.simpleName} ${t.message}")
             }
         }
     }
@@ -204,7 +237,21 @@ class Bridge(private val act: Activity, private val web: WebView) {
             emit("error", "No speech recognizer on this phone.")
             return
         }
-        val r = SpeechRecognizer.createSpeechRecognizer(act)
+        emit("which", "system")
+        runRecognizer(SpeechRecognizer.createSpeechRecognizer(act), tag, silenceMs, null, false)
+    }
+
+    /** Google's on-device recognizer (Android 13+). Much better with accents than the bundled engine. */
+    private fun listenGoogle(tag: String, silenceMs: Int, fallbackKey: String?) {
+        try {
+            emit("which", "google")
+            runRecognizer(SpeechRecognizer.createOnDeviceSpeechRecognizer(act), tag, silenceMs, fallbackKey, true)
+        } catch (e: Exception) {
+            if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs) else listenSystem(tag, silenceMs)
+        }
+    }
+
+    private fun runRecognizer(r: SpeechRecognizer, tag: String, silenceMs: Int, fallbackKey: String?, google: Boolean) {
         recognizer = r
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
@@ -215,7 +262,20 @@ class Bridge(private val act: Activity, private val web: WebView) {
             }
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
-            override fun onError(error: Int) { emit("error", errText(error)) }
+            override fun onError(error: Int) {
+                // Anything other than "didn't hear you": hand over to another engine instead of giving up.
+                val benign = error == 3 || error == 6 || error == 7 || error == 8 || error == 9
+                if (google && !benign) {
+                    main.post {
+                        r.destroy()
+                        if (recognizer === r) recognizer = null
+                        emit("engine", "Switching voice engine…")
+                        if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs) else listenSystem(tag, silenceMs)
+                    }
+                } else {
+                    emit("error", errText(error))
+                }
+            }
             override fun onResults(results: Bundle?) { emit("final", first(results)) }
             override fun onPartialResults(partialResults: Bundle?) {
                 val t = first(partialResults)
@@ -300,6 +360,47 @@ class Bridge(private val act: Activity, private val web: WebView) {
         main.post {
             val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
             act.startActivity(Intent.createChooser(i, "Share"))
+        }
+    }
+
+    /** Step-by-step check of everything offline mode needs. Results arrive as "selftest" events. */
+    @JavascriptInterface
+    fun selfTest(c1: String, c2: String) {
+        loader.execute {
+            fun out(s: String) = emit("selftest", s)
+            try {
+                out("Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
+                val ps = try { android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) } catch (t: Throwable) { -1L }
+                out("Page size $ps bytes, ABI ${Build.SUPPORTED_ABIS.firstOrNull()}")
+                out("Microphone: " + if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "allowed" else "NOT allowed")
+                out("Internet: " + if (Packs.online(act)) "yes" else "no")
+                out("Speech service: " + if (SpeechRecognizer.isRecognitionAvailable(act)) "available" else "missing")
+                val g = Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act)
+                out("Google on-device recognizer: " + if (g) "available" else "not available")
+                for (c in listOf(c1, c2)) {
+                    val path = Packs.voskPath(act, Packs.voskKey(c))
+                    if (path == null) { out("$c built-in voice pack: not downloaded"); continue }
+                    if (voskDisabled()) { out("$c built-in voice pack: downloaded, but the engine is switched off"); continue }
+                    out("$c built-in voice pack: loading (if the app closes here, the engine crashes this phone)")
+                    loadMarker.writeText("1")
+                    try { voskModels.getOrPut(path) { Model(path) }; out("$c built-in voice pack: loads OK") }
+                    catch (t: Throwable) { out("$c built-in voice pack FAILED: ${t.javaClass.simpleName} ${t.message}") }
+                    loadMarker.delete()
+                }
+                val have = com.google.android.gms.tasks.Tasks.await(
+                    com.google.mlkit.common.model.RemoteModelManager.getInstance()
+                        .getDownloadedModels(com.google.mlkit.nl.translate.TranslateRemoteModel::class.java)
+                ).map { it.language }.toSet()
+                for (c in linkedSetOf("en", Packs.mlCode(c1), Packs.mlCode(c2)))
+                    out("Translation pack $c: " + if (c in have) "downloaded" else "MISSING")
+                for (c in listOf(c1, c2)) {
+                    val r = tts?.isLanguageAvailable(Locale.forLanguageTag(c)) ?: -2
+                    out("Voice output $c: " + if (r >= 0) "available" else "NOT installed (Settings, Text-to-speech)")
+                }
+                out("Check finished.")
+            } catch (t: Throwable) {
+                out("Check stopped: ${t.javaClass.simpleName} ${t.message}")
+            }
         }
     }
 

@@ -129,6 +129,9 @@ body[data-ui=record] .dock{grid-template-columns:1fr 1fr}
 #big{position:fixed;inset:0;z-index:40;background:rgba(9,9,11,.97);display:grid;place-items:center;padding:24px;text-align:center;cursor:pointer}
 #bigT{font-size:clamp(30px,9vw,72px);font-weight:800;line-height:1.15;letter-spacing:-.02em}
 #big small{position:absolute;bottom:calc(20px + env(safe-area-inset-bottom));color:var(--mut)}
+#typ{position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.65);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:grid;place-items:center;padding:18px}
+#typ>div{width:100%;max-width:460px}
+textarea{width:100%;min-height:96px;padding:14px;border-radius:16px;border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--fg);font:inherit;font-weight:600;outline:0;resize:vertical}
 </style>
 </head>
 <body data-ui="free">
@@ -165,6 +168,7 @@ body[data-ui=record] .dock{grid-template-columns:1fr 1fr}
       <button class="mini" id="tVoice" aria-label="Voice on or off">🔊</button>
       <button class="mini" id="tFlip" aria-pressed="true" aria-label="Tabletop view">⇅</button>
       <button class="mini" id="tPhr" aria-label="Quick phrases" hidden>💬</button>
+      <button class="mini" id="tType" aria-label="Type to translate" hidden>⌨</button>
       <button class="mini" id="tShare" aria-label="Share conversation">📤</button>
     </div>
     <div class="panel glass"><div class="log" id="bot"></div></div>
@@ -195,8 +199,9 @@ body[data-ui=record] .dock{grid-template-columns:1fr 1fr}
     <label class="line">Download automatically <input type="checkbox" data-s="auto"></label>
     <label class="line">Wi-Fi only <input type="checkbox" data-s="wifi"></label>
   </div></div>
+  <div><h3>Offline voice</h3><div class="stack"><div class="opt"><button data-k="voice" data-v="auto">Auto</button><button data-k="voice" data-v="google">Google</button><button data-k="voice" data-v="zinc">Zinc</button></div><p class="hint" style="margin:0">Auto tries Google’s on-device recognizer first, which copes much better with accents, and falls back to Zinc’s built-in one. Pick your accent in the language list, for example English (India).</p><button class="ghost" id="runTest">Run offline check</button><button class="ghost" id="vOn">Re-enable built-in voice engine</button></div></div>
   <div><h3>Gemini API key</h3><div class="stack"><input id="setKey" type="password" placeholder="Using the built-in key" autocomplete="off"><button class="ghost" id="setKeySave">Save key (leave empty to reset)</button></div></div>
-  <div><h3>Troubleshooting</h3><div class="stack"><pre id="dbgLog" style="margin:0;max-height:160px;overflow:auto;font-size:11px;white-space:pre-wrap;color:var(--mut);background:rgba(255,255,255,.04);border-radius:12px;padding:10px"></pre><button class="ghost" id="logShare">Share debug log</button><p class="hint" style="margin:0">Zinc 1.1</p></div></div>
+  <div><h3>Troubleshooting</h3><div class="stack"><pre id="dbgLog" style="margin:0;max-height:160px;overflow:auto;font-size:11px;white-space:pre-wrap;color:var(--mut);background:rgba(255,255,255,.04);border-radius:12px;padding:10px"></pre><button class="ghost" id="logShare">Share debug log</button><p class="hint" style="margin:0">Zinc 1.3</p></div></div>
   <button class="btn" id="sheetDone">Done</button>
 </div></div>
 
@@ -205,6 +210,15 @@ body[data-ui=record] .dock{grid-template-columns:1fr 1fr}
   <p class="sub">Translated on your phone and spoken aloud in their language.</p>
   <div class="phr" id="phrList"></div>
   <button class="ghost" id="phrClose">Close</button>
+</div></div>
+
+<div id="typ" hidden><div class="glass card">
+  <h2 style="margin:0;font-size:20px">Type to translate</h2>
+  <p class="sub">When speech isn’t picked up, type it. It’s translated on your phone and spoken aloud.</p>
+  <textarea id="typIn" placeholder="Type here…"></textarea>
+  <button class="btn" id="typMe">Say it to them</button>
+  <button class="ghost" id="typThem">Say it to me</button>
+  <button class="ghost" id="typClose">Close</button>
 </div></div>
 
 <div id="big" hidden><div id="bigT"></div><small>Tap to close</small></div>
@@ -225,10 +239,10 @@ const KEYERR=/API key (not valid|expired)|API_KEY_INVALID|quota|exhaust|RESOURCE
 const THEMES={Moon:["#c7d2fe","#a5b4fc","#3b4a8f","#5b3f9c","#1f6f78"],Dusk:["#e9d5ff","#c084fc","#5b21b6","#9d174d","#1e3a8a"],Ember:["#fdba74","#fda4af","#c2410c","#9f1239","#a16207"],Lagoon:["#99f6e4","#7dd3fc","#0f766e","#1d4ed8","#0e7490"],Forest:["#bef264","#86efac","#3f6212","#0f766e","#166534"]};
 const FS=[1,1.25,1.5,0.85];
 const store=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}};
-let cfg={mode:"free",theme:"Moon",fs:1,speak:true,tabletop:true,glow:1,auto:true,wifi:false,quiet:false};
+let cfg={mode:"free",theme:"Moon",fs:1,speak:true,tabletop:true,glow:1,auto:true,wifi:false,quiet:false,voice:"auto"};
 try{cfg={...cfg,...JSON.parse(store("lt_cfg")||"{}")}}catch(e){}
 if(cfg.mode!=="record")cfg.mode="free";
-const LANG={"english":"en","spanish":"es","french":"fr","german":"de","italian":"it","portuguese":"pt-BR","hindi":"hi","japanese":"ja","korean":"ko","mandarin chinese":"zh-Hans","arabic":"ar","turkish":"tr","thai":"th","indonesian":"id","russian":"ru","polish":"pl","dutch":"nl","vietnamese":"vi","bengali":"bn","tamil":"ta","telugu":"te","urdu":"ur","swahili":"sw","ukrainian":"uk","greek":"el","hebrew":"he","swedish":"sv","filipino":"fil","persian":"fa","marathi":"mr","gujarati":"gu","punjabi":"pa","malay":"ms","nepali":"ne","czech":"cs","romanian":"ro","hungarian":"hu","finnish":"fi","danish":"da","norwegian":"no","catalan":"ca","croatian":"hr","slovak":"sk","bulgarian":"bg","afrikaans":"af"};
+const LANG={"english":"en","english (india)":"en-IN","english (uk)":"en-GB","english (australia)":"en-AU","spanish":"es","spanish (mexico)":"es-MX","french":"fr","german":"de","italian":"it","portuguese":"pt-BR","portuguese (portugal)":"pt-PT","hindi":"hi","japanese":"ja","korean":"ko","mandarin chinese":"zh-Hans","arabic":"ar","turkish":"tr","thai":"th","indonesian":"id","russian":"ru","polish":"pl","dutch":"nl","vietnamese":"vi","bengali":"bn","tamil":"ta","telugu":"te","urdu":"ur","swahili":"sw","ukrainian":"uk","greek":"el","hebrew":"he","swedish":"sv","filipino":"fil","persian":"fa","marathi":"mr","gujarati":"gu","punjabi":"pa","malay":"ms","nepali":"ne","czech":"cs","romanian":"ro","hungarian":"hu","finnish":"fi","danish":"da","norwegian":"no","catalan":"ca","croatian":"hr","slovak":"sk","bulgarian":"bg","afrikaans":"af"};
 const cap=w=>w.replace(/\b\w/g,c=>c.toUpperCase());
 const OPTS=Object.keys(LANG).map(k=>"<option>"+cap(k)+"</option>").join("");
 $("l1").innerHTML=OPTS;$("l2").innerHTML='<option value="">Auto-detect</option>'+OPTS;
@@ -261,7 +275,11 @@ let ws,micCtx,outCtx,stream,node,nextT=0,sources=[],acc=new Float32Array(0),mi=0
 const b64=buf=>{let s="";const u=new Uint8Array(buf);for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s)};
 const unb64=s=>{const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u.buffer};
 const status=(t,on)=>{$("status").textContent=t;$("dot").className=on?"on":""};
-const LOG=[];const dlog=m=>{LOG.push(new Date().toTimeString().slice(0,8)+" "+m);if(LOG.length>80)LOG.shift()};
+let LOGINIT=[];try{LOGINIT=JSON.parse(store("lt_log")||"[]")}catch(e){}
+const LOG=LOGINIT;
+const dlog=m=>{LOG.push(new Date().toTimeString().slice(0,8)+" "+m);if(LOG.length>80)LOG.shift();try{store("lt_log",JSON.stringify(LOG))}catch(e){}};
+dlog("--- app started ---");
+if(window.Android&&Android.lastCrash){const c=Android.lastCrash();if(c)dlog("Previous run problem: "+c.slice(0,400))}
 const allTurns=[];
 const send=o=>{if(ws&&ws.readyState===1&&ready)ws.send(JSON.stringify(o))};
 
@@ -484,12 +502,13 @@ function offTap(side){
   try{Android.stopSpeaking()}catch(e){}
   off.side=side;off.listening=true;turn=newTurn(side);turn.inT="…";render(turn);
   status(side==="me"?"Listening to you…":"Listening to them…",true);setBtns();
-  Android.listen(side==="me"?L.c1:L.c2,1200);
+  Android.listen(side==="me"?L.c1:L.c2,1200,cfg.voice);
 }
 window.nativeEvent=(type,data)=>{
   if(type!=="rms"&&type!=="partial"&&type!=="ofProgress")dlog("native "+type+": "+String(data).slice(0,120));
+  if(type==="selftest"){$("dbgLog").textContent=LOG.join("\n");$("dbgLog").scrollTop=1e9;return}
   if(type==="engine"){if(engine==="local"&&off.listening)status(data||(off.side==="me"?"Listening to you…":"Listening to them…"),true);return}
-  if(type==="translated"){const r=JSON.parse(data);if(String(r.id).startsWith("p")){const t=newTurn("me");t.inT=lastPhrase;t.outT=r.text;render(t);status("Ready",true);if(cfg.speak)Android.speak(r.text,L.c2,1,1);return}}
+  if(type==="translated"){const r=JSON.parse(data);if(String(r.id).startsWith("p")){const q=lastReq||{side:"me",text:"",tag:L.c2};const t=newTurn(q.side);t.inT=q.text;t.outT=r.text;render(t);status("Ready",true);if(cfg.speak)Android.speak(r.text,q.tag,1,1);return}}
   if(type==="ofProgress"){const r=JSON.parse(data);$("ofMsg").className="";$("ofMsg").textContent=r.label+" · "+r.pct+"%";$("ofBar").firstChild.style.width=r.pct+"%";return}
   if(type==="ofReady"){const r=JSON.parse(data);ofReadyKey=r.key;ofInfo=r.speech.join(" · ");
     if(r.key===ofKeyNow()){ofDone();if(ofPending){ofPending=false;enterLocal()}}else ofEnsure();return}
@@ -552,11 +571,20 @@ $("sheet").onclick=e=>{if(e.target===$("sheet"))$("sheet").hidden=true};
 $("setKeySave").onclick=()=>{const v=$("setKey").value.trim();store("lt_key",v);$("setKey").value="";$("setKey").placeholder=v?"Using your own key":"Using the built-in key"};
 /* quick phrases */
 const PHRASES=["Where is the nearest toilet?","How much does this cost?","Can you help me, please?","I need a doctor.","Please call the police.","I am allergic to nuts.","Where is the train station?","Please speak slowly.","Can you write it down?","Is this vegetarian?","I am lost. Can you show me on the map?","Thank you very much!"];
-let lastPhrase="";
+let lastReq=null;
 $("phrList").innerHTML=PHRASES.map((p,i)=>'<button class="ghost" data-i="'+i+'">'+p+'</button>').join("");
 $("phrList").onclick=e=>{const b=e.target.closest("button");if(!b)return;const t=PHRASES[+b.dataset.i];$("phr").hidden=true;
   if(!HAS||!L.c2){status("Quick phrases need the Android app and their language",false);return}
-  lastPhrase=t;status("Translating phrase…",true);Android.translate("p"+(++off.id),t,"en",ml(L.c2))};
+  lastReq={side:"me",text:t,tag:L.c2};status("Translating phrase…",true);Android.translate("p"+(++off.id),t,"en",ml(L.c2))};
+$("tType").hidden=!HAS;$("tType").onclick=()=>{$("typ").hidden=false;$("typIn").focus()};
+$("typClose").onclick=()=>{$("typ").hidden=true};
+function typed(side){
+  const t=$("typIn").value.trim();if(!t)return;
+  if(!HAS||!L.c2){status("Typing needs the Android app and their language",false);$("typ").hidden=true;return}
+  const me=side==="me";lastReq={side,text:t,tag:me?L.c2:L.c1};$("typ").hidden=true;$("typIn").value="";
+  status("Translating…",true);Android.translate("p"+(++off.id),t,ml(me?L.c1:L.c2),ml(me?L.c2:L.c1));
+}
+$("typMe").onclick=()=>typed("me");$("typThem").onclick=()=>typed("them");
 $("tPhr").hidden=!HAS;$("tPhr").onclick=()=>{$("phr").hidden=false};
 $("phrClose").onclick=()=>{$("phr").hidden=true};
 
@@ -568,6 +596,11 @@ function shareText(t){
 }
 function transcript(){return allTurns.filter(t=>(t.inT&&t.inT!=="…")||t.outT).map(t=>{const who=t.side==="them"?"Them":t.side==="me"?"You":"Heard";return who+": "+(t.inT||"")+(t.outT?"\n→ "+t.outT:"")}).join("\n\n")}
 $("tShare").onclick=()=>shareText(transcript()||"No conversation yet.");
+$("runTest").onclick=()=>{
+  if(!HAS){$("dbgLog").textContent="The offline check runs inside the Android app.";return}
+  const a=codeOf($("l1").value||"English")||"en",b=codeOf($("l2").value)||"es";
+  dlog("--- offline check "+a+" / "+b+" ---");$("dbgLog").textContent=LOG.join("\n");Android.selfTest(a,b)};
+$("vOn").onclick=()=>{if(HAS)Android.enableVosk();dlog("built-in voice engine re-enabled")};
 $("logShare").onclick=()=>shareText(LOG.join("\n")||"No events yet.");
 document.addEventListener("click",e=>{
   const b=e.target.closest&&e.target.closest(".msg");

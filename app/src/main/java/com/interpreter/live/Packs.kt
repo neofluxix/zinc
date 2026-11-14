@@ -35,12 +35,16 @@ object Packs {
         return if (b == "fil") "tl" else b
     }
 
-    fun voskKey(code: String): String = when (val b = code.substringBefore('-').lowercase(Locale.ROOT)) {
-        "en" -> "en-us"
-        "zh" -> "cn"
-        "fil", "tl" -> "ph"
-        "kk" -> "kz"
-        else -> b
+    fun voskKey(code: String): String {
+        val t = code.lowercase(Locale.ROOT)
+        if (t == "en-in") return "en-in"
+        return when (val b = t.substringBefore('-')) {
+            "en" -> "en-us"
+            "zh" -> "cn"
+            "fil", "tl" -> "ph"
+            "kk" -> "kz"
+            else -> b
+        }
     }
 
     fun voskDir(ctx: Context, key: String) = File(ctx.filesDir, "vosk/$key")
