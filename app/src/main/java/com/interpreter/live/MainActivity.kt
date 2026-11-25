@@ -33,7 +33,7 @@ class MainActivity : Activity() {
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        web = WebView(this).apply { setBackgroundColor(Color.parseColor("#09090B")) }
+        web = WebView(this).apply { setBackgroundColor(Color.parseColor("#101010")) }
         setContentView(web)
 
         // Serves the bundled page over https so the microphone works (secure context)
