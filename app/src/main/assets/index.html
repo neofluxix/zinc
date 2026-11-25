@@ -64,8 +64,6 @@ details input{margin-top:10px}
 .live #status{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #dot{width:8px;height:8px;border-radius:50%;background:var(--mut);flex:none}
 #dot.on{background:var(--teal);box-shadow:0 0 10px var(--teal)}
-#meter{display:inline-block;width:36px;height:5px;border-radius:3px;background:rgba(255,255,255,.12);overflow:hidden;flex:none}
-#meter u{display:block;height:100%;width:0;background:var(--teal);transition:width .08s}
 #dbg{font-size:11.5px;color:var(--mut);text-align:center;margin:-4px 0 0;min-height:1em}
 .panels{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px}
 .panel{flex:1;min-height:0;display:flex;padding:4px}
@@ -103,10 +101,6 @@ details input{margin-top:10px}
 .orb.muted .wave span{transform:scaleY(.15)!important;background:#fda4af;opacity:.5}
 @keyframes voiceWave{0%{transform:scaleY(.28)}100%{transform:scaleY(1.35)}}
 
-body[data-mode=offline] .dock{grid-template-columns:1fr 1fr}
-body[data-mode=offline] .dock>i{display:none}
-body[data-mode=offline] #orb,body[data-mode=offline] #side{width:100%;height:74px;border-radius:22px;font-size:16px;justify-self:stretch}
-body[data-mode=offline] #orb{order:-1;transform:none}
 @media (prefers-reduced-motion:reduce){.orb.speaking .wave span{animation:none}}
 
 #sheet{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:flex-end;justify-content:center}
@@ -285,28 +279,33 @@ function haptic(type="click"){
   }
 }
 
-let chimeCtx=null;
+let chimeCtx=null,chimeUntil=0,ttsSpeaking=false,pendingKeyStart=false;
 function playChime(kind){
   if(cfg.chimes===false)return;
   try{
-    if(!chimeCtx)chimeCtx=new(window.AudioContext||window.webkitAudioContext)();
-    if(chimeCtx.state==="suspended")chimeCtx.resume();
-    const now=chimeCtx.currentTime;
+    let ctx=(outCtx&&outCtx.state!=="closed")?outCtx:null;
+    if(!ctx){
+      if(!chimeCtx||chimeCtx.state==="closed")chimeCtx=new(window.AudioContext||window.webkitAudioContext)();
+      ctx=chimeCtx;
+    }
+    if(ctx.state==="suspended")ctx.resume();
+    chimeUntil=Date.now()+320;
+    const now=ctx.currentTime;
     if(kind==="start"){
-      const osc=chimeCtx.createOscillator(),g=chimeCtx.createGain();
+      const osc=ctx.createOscillator(),g=ctx.createGain();
       osc.type="sine";osc.frequency.setValueAtTime(523.25,now);osc.frequency.exponentialRampToValueAtTime(659.25,now+0.12);
       g.gain.setValueAtTime(0.001,now);g.gain.linearRampToValueAtTime(0.12,now+0.03);g.gain.exponentialRampToValueAtTime(0.0001,now+0.25);
-      osc.connect(g).connect(chimeCtx.destination);osc.start(now);osc.stop(now+0.25);
+      osc.connect(g).connect(ctx.destination);osc.start(now);osc.stop(now+0.25);
     }else if(kind==="stop"){
-      const osc=chimeCtx.createOscillator(),g=chimeCtx.createGain();
+      const osc=ctx.createOscillator(),g=ctx.createGain();
       osc.type="sine";osc.frequency.setValueAtTime(587.33,now);osc.frequency.exponentialRampToValueAtTime(440.0,now+0.08);
       g.gain.setValueAtTime(0.001,now);g.gain.linearRampToValueAtTime(0.08,now+0.02);g.gain.exponentialRampToValueAtTime(0.0001,now+0.15);
-      osc.connect(g).connect(chimeCtx.destination);osc.start(now);osc.stop(now+0.15);
+      osc.connect(g).connect(ctx.destination);osc.start(now);osc.stop(now+0.15);
     }else if(kind==="done"){
-      const osc=chimeCtx.createOscillator(),g=chimeCtx.createGain();
+      const osc=ctx.createOscillator(),g=ctx.createGain();
       osc.type="triangle";osc.frequency.setValueAtTime(880,now);
       g.gain.setValueAtTime(0.001,now);g.gain.linearRampToValueAtTime(0.09,now+0.02);g.gain.exponentialRampToValueAtTime(0.0001,now+0.28);
-      osc.connect(g).connect(chimeCtx.destination);osc.start(now);osc.stop(now+0.28);
+      osc.connect(g).connect(ctx.destination);osc.start(now);osc.stop(now+0.28);
     }
   }catch(e){}
 }
@@ -323,19 +322,37 @@ function toggleStar(text,tag){
 function renderStarredList(){
   const countEl=$("starCount");if(countEl)countEl.textContent=STARRED.length;
   const list=$("starredList");if(!list)return;
+  list.textContent="";
   if(!STARRED.length){
-    list.innerHTML='<p class="hint" style="text-align:center;padding:24px 0">No saved phrases yet. Tap ★ on any translated card to save it here.</p>';
+    const p=document.createElement("p");
+    p.className="hint";
+    p.style.cssText="text-align:center;padding:24px 0";
+    p.textContent="No saved phrases yet. Tap ★ on any translated card to save it here.";
+    list.appendChild(p);
     return;
   }
-  list.innerHTML=STARRED.map((s,i)=>`
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:16px">
-      <div style="flex:1;min-width:0;cursor:pointer" data-star-idx="${i}">
-        <div style="font-weight:700;font-size:15px;overflow:hidden;text-overflow:ellipsis">${s.text}</div>
-        <small style="color:var(--mut);font-weight:600">${s.tag}</small>
-      </div>
-      <button class="act" data-star-del="${i}" style="padding:6px 10px;color:#fda4af" title="Remove">✕</button>
-    </div>
-  `).join("");
+  STARRED.forEach((s,i)=>{
+    const row=document.createElement("div");
+    row.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:16px";
+    const body=document.createElement("div");
+    body.style.cssText="flex:1;min-width:0;cursor:pointer";
+    body.dataset.starIdx=String(i);
+    const title=document.createElement("div");
+    title.style.cssText="font-weight:700;font-size:15px;overflow:hidden;text-overflow:ellipsis";
+    title.textContent=s.text;
+    const sub=document.createElement("small");
+    sub.style.cssText="color:var(--mut);font-weight:600";
+    sub.textContent=s.tag||"";
+    body.append(title,sub);
+    const del=document.createElement("button");
+    del.className="act";
+    del.dataset.starDel=String(i);
+    del.style.cssText="padding:6px 10px;color:#fda4af";
+    del.title="Remove";
+    del.textContent="✕";
+    row.append(body,del);
+    list.appendChild(row);
+  });
 }
 const LANG={"english":"en","english (india)":"en-IN","english (uk)":"en-GB","english (australia)":"en-AU","spanish":"es","spanish (mexico)":"es-MX","french":"fr","german":"de","italian":"it","portuguese":"pt-BR","portuguese (portugal)":"pt-PT","hindi":"hi","japanese":"ja","korean":"ko","mandarin chinese":"zh-Hans","arabic":"ar","turkish":"tr","thai":"th","indonesian":"id","russian":"ru","polish":"pl","dutch":"nl","vietnamese":"vi","bengali":"bn","tamil":"ta","telugu":"te","urdu":"ur","swahili":"sw","ukrainian":"uk","greek":"el","hebrew":"he","swedish":"sv","filipino":"fil","persian":"fa","marathi":"mr","gujarati":"gu","punjabi":"pa","malay":"ms","nepali":"ne","czech":"cs","romanian":"ro","hungarian":"hu","finnish":"fi","danish":"da","norwegian":"no","catalan":"ca","croatian":"hr","slovak":"sk","bulgarian":"bg","afrikaans":"af"};
 const cap=w=>w.replace(/\b\w/g,c=>c.toUpperCase());
@@ -419,6 +436,8 @@ function mkB(panel,cls,label,end){
   $(panel).appendChild(d);
   return d;
 }
+const SCR_TAG={han:"zh-Hans",kana:"ja",hangul:"ko",cyr:"ru",ar:"ar",dev:"hi",th:"th",gr:"el",he:"he",bn:"bn",ta:"ta",te:"te"};
+const guessTag=t=>{const s=scriptOf(t||"");return SCR_TAG[s]||L.c2||L.c1||"en"};
 function render(t){
   const k=(t.side||"x")+cfg.tabletop;
   if(t.key!==k){
@@ -429,12 +448,14 @@ function render(t){
     else{t.i=mkB("bot","in","Heard",false);t.o=mkB("bot","out","Translation",false);t.i2=mkB("top","in","Heard",false);t.o2=mkB("top","out","Translation",false)}
     t.els=[t.i,t.o,t.i2,t.o2].filter(Boolean);
   }
+  const outTag=t.side==="me"?(L.c2||guessTag(t.outT)):t.side==="them"?(L.c1||"en"):guessTag(t.outT);
   const set=(e,x)=>{
     if(e){
       const s=e.querySelector(".txt")||e.lastChild;
       if(s)s.textContent=x;
       e.hidden=!x;
       if(e.classList.contains("out")&&x){
+        e.dataset.tag=outTag;
         const starBtn=e.querySelector('[data-act="star"]');
         if(starBtn){
           const st=isStarred(x);
@@ -455,7 +476,7 @@ function setBtns(){
 }
 function openStage(ui){
   document.body.dataset.ui=ui;$("home").hidden=true;$("stage").hidden=false;$("top").innerHTML="";$("bot").innerHTML="";
-  $("pair").textContent=L.n1+" ⇄ "+(L.n2||"Auto-detect");$("topP").hidden=!cfg.tabletop;$("orb").classList.remove("muted","speaking");turn=null;allTurns.length=0;setBtns();
+  $("pair").textContent=L.n1+" ⇄ "+(L.n2||"Auto-detect");$("topP").hidden=!cfg.tabletop;$("orb").classList.remove("muted","speaking");turn=null;allTurns.length=0;pendingReqs.clear();ttsSpeaking=false;setBtns();
 }
 function back(msg){$("stage").hidden=true;$("home").hidden=false;$("err").textContent=msg||"";$("go").disabled=false;$("go").textContent="Start conversation"}
 
@@ -484,7 +505,7 @@ async function startMic(){
   const src=micCtx.createMediaStreamSource(stream);node=new AudioWorkletNode(micCtx,"pcm");
   node.port.onmessage=e=>{
     const d=e.data;let sum=0;for(let i=0;i<d.length;i+=8)sum+=d[i]*d[i];
-    const hush=cfg.quiet&&outCtx&&nextT+0.4>outCtx.currentTime;
+    const hush=(cfg.quiet&&((outCtx&&nextT+0.4>outCtx.currentTime)||ttsSpeaking))||Date.now()<chimeUntil;
     const live=!muted&&!hush&&(cfg.mode==="free"||recSide);
     lvl=live?Math.min(1,Math.sqrt(sum/(d.length/8))*9):0;
     if(!live)return;
@@ -500,7 +521,7 @@ function cleanupAudio(){
   try{outCtx&&outCtx.close()}catch(e){}
   interrupt();node=stream=micCtx=outCtx=null;lvl=0;
 }
-function teardown(){stopping=true;try{ws&&ws.close()}catch(e){}cleanupAudio()}
+function teardown(){stopping=true;ttsSpeaking=false;pendingReqs.clear();try{ws&&ws.close()}catch(e){}cleanupAudio()}
 
 /* ---------- Gemini ---------- */
 const FIELDS={responseModalities:"gc",inputAudioTranscription:"top",outputAudioTranscription:"top",realtimeInputConfig:"top"};
@@ -509,7 +530,8 @@ function buildSetup(){
   for(const k in pack.vals)(place[k]==="gc"?gc:top)[k]=pack.vals[k];
   if(Object.keys(gc).length)top.generationConfig=gc;return top;
 }
-const curKey=()=>store("lt_key")||DEFAULT_KEY;
+const curKey=()=>(store("lt_key")||DEFAULT_KEY).trim();
+const refreshKeyUI=()=>{$("keyLink").textContent=curKey()?"Gemini API key: Saved ✓":"Set Gemini API key"};
 function connect(){
   ws=new WebSocket("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key="+encodeURIComponent(curKey()));
   ws.onopen=()=>{dlog("socket open, model "+MODELS[mi]);ws.send(JSON.stringify({setup:buildSetup()}))};
@@ -542,25 +564,31 @@ function onClose(e){
   const was=ready;
   if(was&&retry<4&&!KEYERR.test(r)&&navigator.onLine!==false){retry++;ready=false;recSide=null;setBtns();status("Connection dropped. Reconnecting…",false);dlog("reconnect attempt "+retry);setTimeout(()=>{if(!stopping)connect()},700*retry);return}
   teardown();
-  if(KEYERR.test(r)){back("");askKey("Google says: "+r.slice(0,220)+" Paste another Gemini API key to continue.");return}
+  if(KEYERR.test(r)){back("");pendingKeyStart=true;askKey("Google says: "+r.slice(0,220)+" Paste another Gemini API key to continue.");return}
   const why=(r.slice(0,200)||("code "+e.code));
   if(!was&&HAS){back("Gemini problem: "+why+". Using on-device mode instead.");startLocal();return}
   back(was?"The connection ended ("+why+"). Tap Start to continue.":"Couldn’t connect: "+why);
 }
 async function onMsg(ev){
   const m=JSON.parse(typeof ev.data==="string"?ev.data:await ev.data.text());
-  if(m.setupComplete){ready=true;retry=0;dlog("session ready");status(cfg.mode==="record"?"Tap You or Them, speak, tap to send":"Listening. Talk freely",true);setBtns();return}
+  if(m.setupComplete){ready=true;retry=0;dlog("session ready");if(cfg.mode==="free")playChime("start");status(cfg.mode==="record"?"Tap You or Them, speak, tap to send":"Listening. Talk freely",true);setBtns();return}
   const sc=m.serverContent;if(!sc)return;
   if(sc.interrupted){interrupt();if(turn)turn.done=true}
   (sc.modelTurn?.parts||[]).forEach(p=>{if(p.inlineData?.data)playPcm(unb64(p.inlineData.data))});
   const i=sc.inputTranscription?.text,o=sc.outputTranscription?.text;
   if(i){const t=curTurn();t.inT+=i;if(!t.side)t.side=sideOf(t.inT);render(t)}
   if(o){const t=curTurn();t.outT+=o;if(!t.side){const s=sideOf(t.outT);if(s)t.side=s==="me"?"them":"me"}render(t)}
-  if(sc.turnComplete){if(turn)turn.done=true;if(cfg.mode==="record")status("Tap You or Them to continue",true)}
+  if(sc.turnComplete){
+    if(turn&&!turn.done&&turn.outT){playChime("done");haptic("done")}
+    if(turn)turn.done=true;
+    if(cfg.mode==="record")status("Tap You or Them to continue",true);
+  }
 }
 async function startGemini(){
   const rec=cfg.mode==="record";
   if(rec&&!L.n2){$("err").textContent="Pick their language for Record & send.";return}
+  if(!curKey()){pendingKeyStart=true;askKey("Paste a Gemini API key from aistudio.google.com/apikey to use online mode, or tap Cancel and use Offline mode below.");return}
+  if(chimeCtx){try{chimeCtx.close()}catch(e){}chimeCtx=null}
   outCtx=new AudioContext({sampleRate:24000});micCtx=new AudioContext();
   try{await outCtx.resume();await micCtx.resume()}catch(e){}
   try{stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
@@ -578,14 +606,18 @@ async function startGemini(){
   catch(err){
     if(stopping||$("stage").hidden)return;
     if(err instanceof TypeError){MODELS=[...FALLBACK]}
-    else{teardown();back("");askKey(keyMsg(err));return}
+    else{teardown();back("");pendingKeyStart=true;askKey(keyMsg(err));return}
   }
   if(stopping||$("stage").hidden)return;
   mi=0;status("Connecting…",false);connect();startMic().catch(err=>{dlog("mic error: "+err.message);status("Microphone problem: "+err.message,false)});
 }
 function gemRec(side){
   if(!ready)return;
-  if(recSide){send({realtimeInput:{activityEnd:{}}});recSide=null;lvl=0;setBtns();status("Translating…",true);return}
+  if(recSide){
+    playChime("stop");haptic("click");
+    send({realtimeInput:{activityEnd:{}}});recSide=null;lvl=0;setBtns();status("Translating…",true);return;
+  }
+  playChime("start");haptic("tick");
   interrupt();forced=side;recSide=side;turn=null;send({realtimeInput:{activityStart:{}}});setBtns();
   status(side==="me"?"Recording you. Tap Send when done":"Recording them. Tap Send when done",true);
 }
@@ -632,17 +664,25 @@ function offTap(side){
   Android.listen(side==="me"?L.c1:L.c2,1200,cfg.voice);
 }
 window.nativeEvent=(type,data)=>{
-  if(type!=="rms"&&type!=="partial"&&type!=="ofProgress")dlog("native "+type+": "+String(data).slice(0,120));
+  if(type!=="rms"&&type!=="partial"&&type!=="ofProgress"&&type!=="tts")dlog("native "+type+": "+String(data).slice(0,120));
+  if(type==="tts"){ttsSpeaking=(data==="1");return}
   if(type==="selftest"){$("dbgLog").textContent=LOG.join("\n");$("dbgLog").scrollTop=1e9;return}
   if(type==="engine"){if(engine==="local"&&off.listening)status(data||(off.side==="me"?"Listening to you…":"Listening to them…"),true);return}
   if(type==="translated"){
-    const r=JSON.parse(data);
-    if(String(r.id).startsWith("p")){
-      const q=lastReq||{side:"me",text:"",tag:L.c2};
-      const t=newTurn(q.side);t.inT=q.text;t.outT=r.text;render(t);status("Ready",true);
+    const r=JSON.parse(data),id=String(r.id),q=pendingReqs.get(id);
+    if(q)pendingReqs.delete(id);
+    if(id.startsWith("p")){
+      const info=q||{side:"me",text:"",tag:L.c2||"en"};
+      const t=newTurn(info.side);t.inT=info.text;t.outT=r.text;render(t);status("Ready",true);
       playChime("done");haptic("done");
-      if(cfg.speak)Android.speak(r.text,q.tag,1,1);return;
+      if(cfg.speak)Android.speak(r.text,info.tag,1,1);return;
     }
+    if(engine!=="local")return;
+    const target=q?.turn||turn,tag=q?.tag||(off.side==="me"?L.c2:L.c1);
+    if(target){target.outT=r.text;render(target)}
+    playChime("done");haptic("done");
+    status("Ready. Tap You or Them",true);
+    if(cfg.speak)Android.speak(r.text,tag,1,1);return;
   }
   if(type==="ofProgress"){const r=JSON.parse(data);$("ofMsg").className="";$("ofMsg").textContent=r.label+" · "+r.pct+"%";$("ofBar").firstChild.style.width=r.pct+"%";return}
   if(type==="ofReady"){const r=JSON.parse(data);ofReadyKey=r.key;ofInfo=r.speech.join(" · ");
@@ -658,18 +698,17 @@ window.nativeEvent=(type,data)=>{
   if(type==="final"){
     off.listening=false;lvl=0;setBtns();
     if(!turn)return;
-    if(!data){status("Didn’t catch that. Try again",false);if(turn)turn.els.forEach(e=>e.remove());return}
+    if(!data){status("Didn’t catch that. Try again",false);turn.els.forEach(e=>e.remove());turn=null;return}
     turn.inT=data;render(turn);status("Translating…",true);
-    const me=off.side==="me";Android.translate(String(++off.id),data,ml(me?L.c1:L.c2),ml(me?L.c2:L.c1));return;
+    const me=off.side==="me",src=ml(me?L.c1:L.c2),tgt=ml(me?L.c2:L.c1),tag=me?L.c2:L.c1;
+    if(src===tgt){turn.outT=data;render(turn);playChime("done");haptic("done");status("Ready. Tap You or Them",true);if(cfg.speak)Android.speak(data,tag,1,1);return}
+    const reqId=String(++off.id);pendingReqs.set(reqId,{kind:"voice",turn,tag});
+    Android.translate(reqId,data,src,tgt);return;
   }
-  if(type==="translated"){
-    const r=JSON.parse(data),me=off.side==="me";
-    if(turn){turn.outT=r.text;render(turn)}
-    playChime("done");haptic("done");
-    status("Ready. Tap You or Them",true);
-    if(cfg.speak)Android.speak(r.text,me?L.c2:L.c1,1,1);return;
+  if(type==="error"){
+    haptic("error");off.listening=false;lvl=0;setBtns();status(data,false);
+    if(turn&&turn.inT==="…"){turn.els.forEach(e=>e.remove());turn=null}
   }
-  if(type==="error"){haptic("error");off.listening=false;lvl=0;setBtns();status(data,false)}
 };
 
 /* ---------- start / controls ---------- */
@@ -688,8 +727,8 @@ async function start(forceOff){
 })();
 $("go").onclick=()=>start(false);$("goOff").onclick=()=>start(true);
 $("stop").onclick=()=>{haptic("click");teardown();if(HAS){try{Android.stopListening();Android.stopSpeaking()}catch(e){}}turn=null;back("")};
-$("bYou").onclick=()=>{haptic("tick");engine==="local"?offTap("me"):gemRec("me")};
-$("bThem").onclick=()=>{haptic("tick");engine==="local"?offTap("them"):gemRec("them")};
+$("bYou").onclick=()=>{engine==="local"?offTap("me"):gemRec("me")};
+$("bThem").onclick=()=>{engine==="local"?offTap("them"):gemRec("them")};
 $("orb").onclick=()=>{haptic("click");muted=!muted;$("orb").classList.toggle("muted",muted);$("orb").setAttribute("aria-label",muted?"Unmute microphone":"Mute microphone");status(muted?"Muted":"Listening. Talk freely",!muted)};
 $("tFlip").onclick=()=>{haptic("click");cfg.tabletop=!cfg.tabletop;$("topP").hidden=!cfg.tabletop;applyCfg()};
 $("tSize").onclick=()=>{haptic("click");cfg.fs=FS[(FS.indexOf(cfg.fs)+1)%FS.length];applyCfg()};
@@ -699,24 +738,30 @@ $("swap").onclick=()=>{haptic("click");const a=$("l1").value,b=$("l2").value;if(
 $("l1").onchange=$("l2").onchange=()=>{haptic("click");ofEnsure()};
 $("pkAll").onclick=()=>{haptic("click");if(HAS)Android.downloadAll(cfg.wifi);else{$("ofMsg").textContent="Language packs download inside the Android app."}};
 $("pkStop").onclick=()=>{haptic("click");if(HAS)Android.cancelDownloads();$("pkStop").hidden=true};
-$("keyLink").onclick=()=>{haptic("click");askKey("Use your own Gemini API key. It stays on this device.")};
-$("keyUse").onclick=()=>{haptic("click");const v=$("keyIn").value.trim();if(!v)return;store("lt_key",v);$("keyModal").hidden=true;$("err").textContent="";start()};
-$("keyCancel").onclick=()=>{haptic("click");$("keyModal").hidden=true};
-$("gear").onclick=()=>{haptic("click");$("setKey").placeholder=store("lt_key")?"Using your own key":"Paste your Gemini API key";$("dbgLog").textContent=LOG.join("\n")||"No events yet.";$("sheet").hidden=false};
+$("keyLink").onclick=()=>{haptic("click");pendingKeyStart=false;askKey("Paste a Gemini API key from aistudio.google.com/apikey. It stays on this device.")};
+$("keyUse").onclick=()=>{haptic("click");const v=$("keyIn").value.trim();if(!v)return;store("lt_key",v);refreshKeyUI();$("keyModal").hidden=true;$("err").textContent="";if(pendingKeyStart){pendingKeyStart=false;start(false)}};
+$("keyCancel").onclick=()=>{haptic("click");pendingKeyStart=false;$("keyModal").hidden=true};
+$("gear").onclick=()=>{haptic("click");$("setKey").placeholder=curKey()?"Using your saved key":"Paste your Gemini API key";$("dbgLog").textContent=LOG.join("\n")||"No events yet.";$("sheet").hidden=false};
 $("sheetDone").onclick=()=>{haptic("click");$("sheet").hidden=true};
 $("sheet").onclick=e=>{if(e.target===$("sheet"))$("sheet").hidden=true};
-$("setKeySave").onclick=()=>{haptic("click");const v=$("setKey").value.trim();store("lt_key",v);$("setKey").value="";$("setKey").placeholder=v?"Using your own key":"Paste your Gemini API key"};
+$("setKeySave").onclick=()=>{haptic("click");const v=$("setKey").value.trim();store("lt_key",v);refreshKeyUI();$("setKey").value="";$("setKey").placeholder=v?"Using your saved key":"Paste your Gemini API key"};
 
 /* quick phrases and starred */
 const PHRASES=["Where is the nearest toilet?","How much does this cost?","Can you help me, please?","I need a doctor.","Please call the police.","I am allergic to nuts.","Where is the train station?","Please speak slowly.","Can you write it down?","Is this vegetarian?","I am lost. Can you show me on the map?","Thank you very much!"];
-let lastReq=null;
+const pendingReqs=new Map();
 $("phrList").innerHTML=PHRASES.map((p,i)=>'<button class="ghost" data-i="'+i+'">'+p+'</button>').join("");
 $("phrList").onclick=e=>{
   const b=e.target.closest("button");if(!b)return;
   haptic("click");
   const t=PHRASES[+b.dataset.i];$("phr").hidden=true;
   if(!HAS||!L.c2){status("Quick phrases need the Android app and their language",false);return}
-  lastReq={side:"me",text:t,tag:L.c2};status("Translating phrase…",true);Android.translate("p"+(++off.id),t,"en",ml(L.c2));
+  if(ml(L.c2)==="en"){
+    const turnEl=newTurn("me");turnEl.inT=t;turnEl.outT=t;render(turnEl);status("Ready",true);
+    playChime("done");haptic("done");if(cfg.speak)Android.speak(t,L.c2,1,1);return;
+  }
+  const reqId="p"+(++off.id);
+  pendingReqs.set(reqId,{kind:"phrase",side:"me",text:t,tag:L.c2});
+  status("Translating phrase…",true);Android.translate(reqId,t,"en",ml(L.c2));
 };
 $("tabPhr").onclick=()=>{
   haptic("click");
@@ -747,6 +792,7 @@ $("starredList").onclick=e=>{
     const s=STARRED[idx];
     if(s){
       $("phr").hidden=true;
+      status("Speaking saved phrase…",true);
       if(HAS)Android.speak(s.text,s.tag,1.0,1.0);
       else if('speechSynthesis' in window){const u=new SpeechSynthesisUtterance(s.text);u.lang=s.tag;speechSynthesis.speak(u)}
     }
@@ -759,8 +805,15 @@ function typed(side){
   haptic("click");
   const t=$("typIn").value.trim();if(!t)return;
   if(!HAS||!L.c2){status("Typing needs the Android app and their language",false);$("typ").hidden=true;return}
-  const me=side==="me";lastReq={side,text:t,tag:me?L.c2:L.c1};$("typ").hidden=true;$("typIn").value="";
-  status("Translating…",true);Android.translate("p"+(++off.id),t,ml(me?L.c1:L.c2),ml(me?L.c2:L.c1));
+  const me=side==="me",tag=me?L.c2:L.c1,src=ml(me?L.c1:L.c2),tgt=ml(me?L.c2:L.c1);
+  $("typ").hidden=true;$("typIn").value="";
+  if(src===tgt){
+    const turnEl=newTurn(side);turnEl.inT=t;turnEl.outT=t;render(turnEl);status("Ready",true);
+    playChime("done");haptic("done");if(cfg.speak)Android.speak(t,tag,1,1);return;
+  }
+  const reqId="p"+(++off.id);
+  pendingReqs.set(reqId,{kind:"phrase",side,text:t,tag});
+  status("Translating…",true);Android.translate(reqId,t,src,tgt);
 }
 $("typMe").onclick=()=>typed("me");$("typThem").onclick=()=>typed("them");
 $("tPhr").hidden=!HAS;$("tPhr").onclick=()=>{haptic("click");renderStarredList();$("phr").hidden=false};
@@ -794,8 +847,7 @@ document.addEventListener("click",e=>{
     const txt=msgEl?.querySelector(".txt")?.textContent?.trim()||"";
     if(!txt)return;
     const act=actBtn.dataset.act;
-    const isTop=msgEl.closest("#top");
-    const tag=isTop?(L.c2||"en"):(L.c1||"en");
+    const tag=msgEl.dataset.tag||L.c2||L.c1||"en";
     if(act==="repeat"){
       if(HAS)Android.speak(txt,tag,1.0,1.0);
       else if('speechSynthesis' in window){const u=new SpeechSynthesisUtterance(txt);u.lang=tag;speechSynthesis.speak(u)}
@@ -805,8 +857,12 @@ document.addEventListener("click",e=>{
     }else if(act==="star"){
       toggleStar(txt,tag);
       const st=isStarred(txt);
-      actBtn.classList.toggle("starred",st);
-      actBtn.textContent=st?"★ Saved":"★ Star";
+      document.querySelectorAll("#stage .msg.out").forEach(m=>{
+        if((m.querySelector(".txt")?.textContent?.trim()||"")===txt){
+          const sb=m.querySelector('[data-act="star"]');
+          if(sb){sb.classList.toggle("starred",st);sb.textContent=st?"★ Saved":"★ Star"}
+        }
+      });
     }else if(act==="big"){
       $("bigT").textContent=txt;$("big").hidden=false;
     }
@@ -828,6 +884,7 @@ window.addEventListener("offline",()=>{
   teardown();back("");$("err").textContent="Lost internet, switched to on-device mode.";startLocal();
 });
 setTimeout(ofEnsure,600);
+refreshKeyUI();
 renderStarredList();
 </script>
 </body>

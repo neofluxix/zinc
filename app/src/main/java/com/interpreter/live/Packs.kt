@@ -37,10 +37,12 @@ object Packs {
 
     fun voskKey(code: String): String {
         val t = code.lowercase(Locale.ROOT)
-        if (t == "en-in") return "en-in"
+        if (t == "en-in" || t == "en-gb") return t
         return when (val b = t.substringBefore('-')) {
             "en" -> "en-us"
             "zh" -> "cn"
+            "uk" -> "ua"
+            "vi" -> "vn"
             "fil", "tl" -> "ph"
             "kk" -> "kz"
             else -> b
@@ -48,9 +50,9 @@ object Packs {
     }
 
     fun voskDir(ctx: Context, key: String) = File(ctx.filesDir, "vosk/$key")
-    fun voskReady(ctx: Context, key: String) = File(voskDir(ctx, key), ".ok").exists()
+    fun voskReady(ctx: Context, key: String) = File(ctx.filesDir, "vosk/$key/.ok").exists()
     fun voskPath(ctx: Context, key: String): String? =
-        voskDir(ctx, key).listFiles()?.firstOrNull { it.isDirectory }?.absolutePath
+        if (voskReady(ctx, key)) voskDir(ctx, key).listFiles()?.firstOrNull { it.isDirectory }?.absolutePath else null
 
     private fun caps(ctx: Context): NetworkCapabilities? {
         val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -117,7 +119,7 @@ object Packs {
             while (e != null) {
                 if (cancel) throw IllegalStateException("Stopped")
                 val f = File(dir, e.name)
-                if (!f.canonicalPath.startsWith(root)) throw SecurityException("Bad archive")
+                if (!f.canonicalPath.startsWith(root + File.separator)) throw SecurityException("Bad archive")
                 if (e.isDirectory) {
                     f.mkdirs()
                 } else {
@@ -182,7 +184,8 @@ object Packs {
             val speech = langs.map { l -> if (voskReady(ctx, voskKey(l))) "$l: on-device voice" else "$l: system voice" }
             emit("ofReady", JSONObject().put("key", key).put("speech", JSONArray(speech)).toString())
         } catch (e: Exception) {
-            emit("ofFail", "Download failed: ${e.message ?: "unknown error"}. Check your connection.")
+            if (cancel) emit("ofFail", "Download stopped.")
+            else emit("ofFail", "Download failed: ${e.message ?: "unknown error"}. Check your connection.")
         }
     }
 

@@ -43,5 +43,5 @@ dependencies {
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.alphacephei:vosk-android:0.3.75")
-    implementation("net.java.dev.jna:jna:5.17.0@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
 }
