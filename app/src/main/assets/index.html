@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#101010">
 <title>Zinc</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -255,7 +255,7 @@ textarea{width:100%;min-height:96px;padding:14px;border-radius:14px;border:1px s
 <script>
 const $=id=>document.getElementById(id);
 const DEFAULT_KEY="";
-let retry=0;let MODELS=["gemini-3.8-live","gemini-2.5-flash-native-audio-preview-12-2025"];const FALLBACK=[...MODELS];
+let retry=0;let MODELS=["gemini-2.5-flash-native-audio-preview-12-2025"];const FALLBACK=[...MODELS];
 const KEYERR=/API key (not valid|expired)|API_KEY_INVALID|quota|exhaust|RESOURCE_EXHAUSTED|billing/i;
 const THEMES={Creme:"#FFC799",Sand:"#E6D2B5",Clay:"#EAA085",Sage:"#B5D3B8",Bone:"#E4E4E7"};
 const FS=[1,1.25,1.5,0.85];
@@ -474,7 +474,9 @@ function setBtns(){
 }
 function openStage(ui){
   document.body.dataset.ui=ui;$("home").hidden=true;$("stage").hidden=false;$("top").innerHTML="";$("bot").innerHTML="";
-  $("pair").textContent=L.n1+" ⇄ "+(L.n2||"Auto-detect");$("topP").hidden=!cfg.tabletop;$("orb").classList.remove("muted","speaking");turn=null;allTurns.length=0;pendingReqs.clear();ttsSpeaking=false;setBtns();
+  $("pair").textContent=L.n1+" ⇄ "+(L.n2||"Auto-detect");$("topP").hidden=!cfg.tabletop;$("orb").classList.remove("muted","speaking");
+  $("tPhr").hidden=!(HAS||engine==="gemini");$("tType").hidden=!(HAS||engine==="gemini");
+  turn=null;allTurns.length=0;pendingReqs.clear();ttsSpeaking=false;setBtns();
 }
 function back(msg){$("stage").hidden=true;$("home").hidden=false;$("err").textContent=msg||"";$("go").disabled=false;$("go").textContent="Start conversation"}
 
@@ -499,7 +501,9 @@ function down(d){
 }
 async function startMic(){
   const code='class P extends AudioWorkletProcessor{process(i){const c=i[0][0];if(c)this.port.postMessage(c.slice(0));return true}}registerProcessor("pcm",P)';
-  await micCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([code],{type:"application/javascript"})));
+  const url=URL.createObjectURL(new Blob([code],{type:"application/javascript"}));
+  try{await micCtx.audioWorklet.addModule(url)}finally{URL.revokeObjectURL(url)}
+  if(stopping||!micCtx||!stream)return;
   const src=micCtx.createMediaStreamSource(stream);node=new AudioWorkletNode(micCtx,"pcm");
   node.port.onmessage=e=>{
     const d=e.data;let sum=0;for(let i=0;i<d.length;i+=8)sum+=d[i]*d[i];
@@ -721,7 +725,7 @@ async function start(forceOff){
 }
 (function tick(){
   const o=$("orb");o.style.setProperty("--lvl",lvl.toFixed(2));
-  o.classList.toggle("speaking",sources.length>0);requestAnimationFrame(tick);
+  o.classList.toggle("speaking",sources.length>0||ttsSpeaking);requestAnimationFrame(tick);
 })();
 $("go").onclick=()=>start(false);$("goOff").onclick=()=>start(true);
 $("stop").onclick=()=>{haptic("click");teardown();if(HAS){try{Android.stopListening();Android.stopSpeaking()}catch(e){}}turn=null;back("")};
@@ -738,6 +742,8 @@ $("pkAll").onclick=()=>{haptic("click");if(HAS)Android.downloadAll(cfg.wifi);els
 $("pkStop").onclick=()=>{haptic("click");if(HAS)Android.cancelDownloads();$("pkStop").hidden=true};
 $("keyLink").onclick=()=>{haptic("click");pendingKeyStart=false;askKey("Paste a Gemini API key from aistudio.google.com/apikey. It stays on this device.")};
 $("keyUse").onclick=()=>{haptic("click");const v=$("keyIn").value.trim();if(!v)return;store("lt_key",v);refreshKeyUI();$("keyModal").hidden=true;$("err").textContent="";if(pendingKeyStart){pendingKeyStart=false;start(false)}};
+$("keyIn").onkeydown=e=>{if(e.key==="Enter")$("keyUse").click()};
+$("setKey").onkeydown=e=>{if(e.key==="Enter")$("setKeySave").click()};
 $("keyCancel").onclick=()=>{haptic("click");pendingKeyStart=false;$("keyModal").hidden=true};
 $("gear").onclick=()=>{haptic("click");$("setKey").placeholder=curKey()?"Using your saved key":"Paste your Gemini API key";$("dbgLog").textContent=LOG.join("\n")||"No events yet.";$("sheet").hidden=false};
 $("sheetDone").onclick=()=>{haptic("click");$("sheet").hidden=true};
@@ -752,6 +758,12 @@ $("phrList").onclick=e=>{
   const b=e.target.closest("button");if(!b)return;
   haptic("click");
   const t=PHRASES[+b.dataset.i];$("phr").hidden=true;
+  if(!L.c2&&engine!=="gemini"){status("Pick their language first",false);return}
+  if(engine==="gemini"&&ready&&(!HAS||ofKeyNow()!==ofReadyKey)){
+    const turnEl=newTurn("me");turnEl.inT=t;turn=turnEl;tAct=Date.now();forced="me";render(turnEl);status("Translating phrase…",true);
+    send({clientContent:{turns:[{role:"user",parts:[{text:`Translate and speak this to ${L.n2||"their language"}: ${t}`}]}],turnComplete:true}});
+    return;
+  }
   if(!HAS||!L.c2){status("Quick phrases need the Android app and their language",false);return}
   if(ml(L.c2)==="en"){
     const turnEl=newTurn("me");turnEl.inT=t;turnEl.outT=t;render(turnEl);status("Ready",true);
@@ -797,13 +809,20 @@ $("starredList").onclick=e=>{
   }
 };
 
-$("tType").hidden=!HAS;$("tType").onclick=()=>{haptic("click");$("typ").hidden=false;$("typIn").focus()};
+$("tType").onclick=()=>{haptic("click");$("typ").hidden=false;$("typIn").focus()};
 $("typClose").onclick=()=>{haptic("click");$("typ").hidden=true};
 function typed(side){
   haptic("click");
   const t=$("typIn").value.trim();if(!t)return;
+  const me=side==="me",tag=me?L.c2:L.c1,src=ml(me?L.c1:(L.c2||L.c1)),tgt=ml(me?(L.c2||L.c1):L.c1);
+  if(engine==="gemini"&&ready&&(!HAS||!L.c2||ofKeyNow()!==ofReadyKey)){
+    $("typ").hidden=true;$("typIn").value="";
+    const turnEl=newTurn(side);turnEl.inT=t;turn=turnEl;tAct=Date.now();forced=side;render(turnEl);status("Translating…",true);
+    const toName=me?(L.n2||"their language"):L.n1;
+    send({clientContent:{turns:[{role:"user",parts:[{text:`Translate and speak this to ${toName}: ${t}`}]}],turnComplete:true}});
+    return;
+  }
   if(!HAS||!L.c2){status("Typing needs the Android app and their language",false);$("typ").hidden=true;return}
-  const me=side==="me",tag=me?L.c2:L.c1,src=ml(me?L.c1:L.c2),tgt=ml(me?L.c2:L.c1);
   $("typ").hidden=true;$("typIn").value="";
   if(src===tgt){
     const turnEl=newTurn(side);turnEl.inT=t;turnEl.outT=t;render(turnEl);status("Ready",true);
@@ -814,7 +833,7 @@ function typed(side){
   status("Translating…",true);Android.translate(reqId,t,src,tgt);
 }
 $("typMe").onclick=()=>typed("me");$("typThem").onclick=()=>typed("them");
-$("tPhr").hidden=!HAS;$("tPhr").onclick=()=>{haptic("click");renderStarredList();$("phr").hidden=false};
+$("tPhr").onclick=()=>{haptic("click");renderStarredList();$("phr").hidden=false};
 $("phrClose").onclick=()=>{haptic("click");$("phr").hidden=true};
 
 /* share + show-big */
@@ -881,6 +900,15 @@ window.addEventListener("offline",()=>{
   if(ofKeyNow()!==ofReadyKey){status("No internet, and offline packs aren’t ready for this pair",false);return}
   teardown();back("");$("err").textContent="Lost internet, switched to on-device mode.";startLocal();
 });
+window.handleBack=()=>{
+  if(!$("big").hidden){$("big").hidden=true;return true}
+  if(!$("keyModal").hidden){pendingKeyStart=false;$("keyModal").hidden=true;return true}
+  if(!$("typ").hidden){$("typ").hidden=true;return true}
+  if(!$("phr").hidden){$("phr").hidden=true;return true}
+  if(!$("sheet").hidden){$("sheet").hidden=true;return true}
+  if(!$("stage").hidden){$("stop").click();return true}
+  return false;
+};
 setTimeout(ofEnsure,600);
 refreshKeyUI();
 renderStarredList();

@@ -19,6 +19,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
@@ -433,7 +434,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
             }
             t.setSpeechRate(rate)
             t.setPitch(pitch)
-            t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u")
+            if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u") == TextToSpeech.ERROR) emit("tts", "0")
         }
     }
 
@@ -530,8 +531,11 @@ class Bridge(private val act: Activity, private val web: WebView) {
                     com.google.mlkit.common.model.RemoteModelManager.getInstance()
                         .getDownloadedModels(com.google.mlkit.nl.translate.TranslateRemoteModel::class.java)
                 ).map { it.language }.toSet()
-                for (c in linkedSetOf("en", Packs.mlCode(c1), Packs.mlCode(c2)))
-                    out("Translation pack $c: " + if (c in have) "downloaded" else "MISSING")
+                for (c in linkedSetOf("en", Packs.mlCode(c1), Packs.mlCode(c2))) {
+                    val status = if (TranslateLanguage.fromLanguageTag(c) == null) "NOT supported offline"
+                    else if (c in have) "downloaded" else "MISSING"
+                    out("Translation pack $c: $status")
+                }
                 for (c in listOf(c1, c2).distinct()) {
                     val msg = if (ttsStatus != TextToSpeech.SUCCESS) "TTS engine not ready ($ttsStatus)"
                     else {

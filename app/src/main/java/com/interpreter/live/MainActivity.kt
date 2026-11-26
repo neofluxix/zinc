@@ -92,7 +92,13 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else super.onBackPressed()
+        if (web.canGoBack()) {
+            web.goBack()
+            return
+        }
+        web.evaluateJavascript("window.handleBack&&window.handleBack()") { res ->
+            if (res != "true" && !isFinishing) finish()
+        }
     }
 
     override fun onDestroy() {
