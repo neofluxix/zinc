@@ -255,7 +255,7 @@ textarea{width:100%;min-height:96px;padding:14px;border-radius:14px;border:1px s
 <script>
 const $=id=>document.getElementById(id);
 const DEFAULT_KEY="";
-let retry=0;let MODELS=["gemini-2.5-flash-native-audio-preview-12-2025"];const FALLBACK=[...MODELS];
+let retry=0;let MODELS=["gemini-3.8-live","gemini-2.5-flash-native-audio-preview-12-2025"];const FALLBACK=[...MODELS];
 const KEYERR=/API key (not valid|expired)|API_KEY_INVALID|quota|exhaust|RESOURCE_EXHAUSTED|billing/i;
 const THEMES={Creme:"#FFC799",Sand:"#E6D2B5",Clay:"#EAA085",Sage:"#B5D3B8",Bone:"#E4E4E7"};
 const FS=[1,1.25,1.5,0.85];
@@ -546,7 +546,8 @@ async function liveModels(key){
   let names=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes("bidiGenerateContent")).map(m=>m.name.replace(/^models\//,""));
   const aud=names.filter(n=>/live|audio/.test(n));if(aud.length)names=aud;
   const ver=n=>parseFloat((n.match(/(\d+(?:\.\d+)?)/)||[0,0])[1])||0;
-  names.sort((a,b)=>ver(b)-ver(a));
+  const rank=n=>ver(n)*100-(/thinking/i.test(n)?10:0)-(/preview/i.test(n)?1:0);
+  names.sort((a,b)=>rank(b)-rank(a));
   dlog("live models: "+(names.join(", ")||"none, using fallback"));
   return names.length?names:[...FALLBACK];
 }
