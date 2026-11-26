@@ -23,6 +23,7 @@ import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
+import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -174,7 +175,13 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 if (!voskModels.containsKey(path)) emit("engine", "Loading voice engine…")
                 loadMarker.writeText("1")
                 val model = voskModels.getOrPut(path) { Model(path) }
-                val svc = SpeechService(Recognizer(model, 16000.0f), 16000.0f)
+                val rec = Recognizer(model, 16000.0f).apply {
+                    try {
+                        setWords(true)
+                        setPartialWords(true)
+                    } catch (_: Throwable) { }
+                }
+                val svc = SpeechService(rec, 16000.0f)
                 loadMarker.delete()
                 if (gen != listenGen || dead) {
                     try { svc.shutdown() } catch (_: Exception) { }
@@ -202,21 +209,52 @@ class Bridge(private val act: Activity, private val web: WebView) {
     private fun runVosk(svc: SpeechService, tag: String, silenceMs: Int) {
         vosk = svc
         val sb = StringBuilder()
+        val accWords = JSONArray()
         var finished = false
         var lastAct = System.currentTimeMillis()
         var lastPartial = ""
         val cjk = tag.startsWith("zh") || tag.startsWith("ja")
         fun clean(s: String) = if (cjk) s.replace(" ", "") else s
 
+        fun extractWords(obj: JSONObject?, key: String): List<JSONObject> {
+            val arr = obj?.optJSONArray(key) ?: return emptyList()
+            val list = ArrayList<JSONObject>(arr.length())
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val w = item.optString("word")
+                if (w.isNotEmpty()) {
+                    list.add(JSONObject().put("w", w).put("c", item.optDouble("conf", -1.0)))
+                }
+            }
+            return list
+        }
+        fun mergeWords(extra: List<JSONObject>): JSONArray {
+            val out = JSONArray()
+            for (i in 0 until accWords.length()) out.put(accWords.get(i))
+            for (item in extra) out.put(item)
+            return out
+        }
+
         fun close() {
             finished = true
             if (vosk === svc) vosk = null
             try { svc.shutdown() } catch (_: Exception) { }
         }
-        fun finish(extra: String) {
+        fun finish(extra: String, finalObj: JSONObject? = null) {
             if (finished) return
+            for (item in extractWords(finalObj, "result")) accWords.put(item)
+            var sum = 0.0
+            var cnt = 0
+            for (i in 0 until accWords.length()) {
+                val c = accWords.optJSONObject(i)?.optDouble("c", -1.0) ?: -1.0
+                if (c >= 0.0) { sum += c; cnt++ }
+            }
+            val avgConf = if (cnt > 0) sum / cnt else -1.0
             val t = clean((sb.toString() + " " + extra).trim())
             close()
+            if (t.isNotEmpty()) {
+                emit("surety", JSONObject().put("partial", false).put("conf", avgConf).put("words", accWords).toString())
+            }
             emit("final", t)
         }
 
@@ -236,24 +274,31 @@ class Bridge(private val act: Activity, private val web: WebView) {
 
         svc.startListening(object : VoskListener {
             override fun onPartialResult(hypothesis: String?) {
-                val p = JSONObject(hypothesis ?: "{}").optString("partial")
+                val obj = JSONObject(hypothesis ?: "{}")
+                val p = obj.optString("partial")
                 if (p.isNotEmpty() && p != lastPartial) {
                     lastPartial = p
                     lastAct = System.currentTimeMillis()
+                    val words = mergeWords(extractWords(obj, "partial_result"))
+                    emit("surety", JSONObject().put("partial", true).put("words", words).toString())
                     emit("partial", clean((sb.toString() + " " + p).trim()))
                 }
             }
             override fun onResult(hypothesis: String?) {
-                val t = JSONObject(hypothesis ?: "{}").optString("text")
+                val obj = JSONObject(hypothesis ?: "{}")
+                val t = obj.optString("text")
+                for (item in extractWords(obj, "result")) accWords.put(item)
                 if (t.isNotEmpty()) {
                     sb.append(' ').append(t)
                     lastPartial = ""
                     lastAct = System.currentTimeMillis()
+                    emit("surety", JSONObject().put("partial", true).put("words", accWords).toString())
                     emit("partial", clean(sb.toString().trim()))
                 }
             }
             override fun onFinalResult(hypothesis: String?) {
-                finish(JSONObject(hypothesis ?: "{}").optString("text"))
+                val obj = JSONObject(hypothesis ?: "{}")
+                finish(obj.optString("text"), obj)
             }
             override fun onError(exception: Exception?) {
                 close()
@@ -345,8 +390,21 @@ class Bridge(private val act: Activity, private val web: WebView) {
             override fun onResults(results: Bundle?) {
                 if (done) return
                 done = true
-                val txt = first(results)
+                val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val scores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+                val txt = list?.firstOrNull() ?: ""
+                val conf = scores?.firstOrNull()?.takeIf { it in 0f..1f } ?: -1f
+                val alts = JSONArray()
+                if (list != null) {
+                    for (i in 1 until minOf(list.size, 3)) {
+                        val a = list[i]
+                        if (!a.isNullOrBlank() && a != txt) alts.put(a)
+                    }
+                }
                 main.post { release() }
+                if (txt.isNotEmpty()) {
+                    emit("surety", JSONObject().put("partial", false).put("conf", conf.toDouble()).put("alts", alts).toString())
+                }
                 emit("final", txt)
             }
             override fun onPartialResults(partialResults: Bundle?) {
@@ -362,6 +420,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
                     .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
                     .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                     .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, google || !Packs.online(act))
                     .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs.toLong())
                     .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs.toLong())

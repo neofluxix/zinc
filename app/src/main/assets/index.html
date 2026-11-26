@@ -76,6 +76,20 @@ details input{margin-top:10px}
 .msg .act:active{transform:scale(.94)}
 .msg .act:hover{color:var(--fg);background:#262626}
 .msg .act.starred{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,var(--surf));border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+.w-hi{color:var(--fg)}
+.w-mid{color:var(--acc);text-decoration:underline dotted color-mix(in srgb,var(--acc) 55%,transparent);text-underline-offset:3px}
+.w-lo{color:var(--bad);text-decoration:underline wavy color-mix(in srgb,var(--bad) 70%,transparent);text-underline-offset:3px}
+.msg.c-mid{border-color:color-mix(in srgb,var(--acc) 45%,var(--line))}
+.msg.c-lo{border-color:color-mix(in srgb,var(--bad) 50%,var(--line))}
+.sure{display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:99px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--mut);vertical-align:middle}
+.sure.hi{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
+.sure.mid{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+.sure.lo{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.alts{font-size:12px;color:var(--mut);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.alts button{background:var(--bg);border:1px solid var(--line);border-radius:99px;color:var(--acc);font:inherit;font-size:11.5px;font-weight:700;padding:2px 9px;cursor:pointer}
+.legend{display:flex;justify-content:center;gap:14px;font-size:11px;color:var(--mut);font-weight:600;padding:0 4px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
 
 .dock{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;padding:10px 12px;border-radius:20px}
 #side{justify-self:start}
@@ -182,6 +196,7 @@ textarea{width:100%;min-height:96px;padding:14px;border-radius:14px;border:1px s
     </div>
     <div class="panel glass"><div class="log" id="bot"></div></div>
   </div>
+  <div class="legend" id="sureLegend"><span><i style="background:var(--fg)"></i>Sure</span><span><i style="background:var(--acc)"></i>Check</span><span><i style="background:var(--bad)"></i>Unsure</span></div>
   <div class="dock glass">
     <button class="rb" id="bYou"></button>
     <button class="orb" id="orb" aria-label="Mute microphone">
@@ -206,6 +221,7 @@ textarea{width:100%;min-height:96px;padding:14px;border-radius:14px;border:1px s
     <label class="line">Mute mic while it speaks (stops echo) <input type="checkbox" data-s="quiet"></label>
     <label class="line">Haptic touch feedback <input type="checkbox" data-s="haptics"></label>
     <label class="line">Audio sound cues (start/stop) <input type="checkbox" data-s="chimes"></label>
+    <label class="line">Color-code word certainty <input type="checkbox" data-s="surety"></label>
   </div></div>
   <div><h3>Offline packs</h3><div class="stack">
     <label class="line">Download automatically <input type="checkbox" data-s="auto"></label>
@@ -260,7 +276,7 @@ const KEYERR=/API key (not valid|expired)|API_KEY_INVALID|quota|exhaust|RESOURCE
 const THEMES={Creme:"#FFC799",Sand:"#E6D2B5",Clay:"#EAA085",Sage:"#B5D3B8",Bone:"#E4E4E7"};
 const FS=[1,1.25,1.5,0.85];
 const store=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}};
-let cfg={mode:"free",theme:"Creme",fs:1,speak:true,tabletop:true,auto:true,wifi:false,quiet:false,voice:"auto",haptics:true,chimes:true};
+let cfg={mode:"free",theme:"Creme",fs:1,speak:true,tabletop:true,auto:true,wifi:false,quiet:false,voice:"auto",haptics:true,chimes:true,surety:true};
 try{cfg={...cfg,...JSON.parse(store("lt_cfg")||"{}")}}catch(e){}
 if(cfg.mode!=="record")cfg.mode="free";
 if(!THEMES[cfg.theme])cfg.theme="Creme";
@@ -370,6 +386,7 @@ function applyCfg(){
   document.querySelectorAll("[data-v]").forEach(b=>b.setAttribute("aria-pressed",String(cfg[b.dataset.k]===b.dataset.v)));
   $("modeHint").textContent=cfg.mode==="free"?"Talk freely. Both of you can speak and interrupt, and it translates both ways.":"Tap You or Them, speak, then tap again to send.";
   $("tVoice").textContent=cfg.speak?"🔊":"🔇";$("tFlip").setAttribute("aria-pressed",String(cfg.tabletop));
+  if($("sureLegend"))$("sureLegend").hidden=!cfg.surety;
   store("lt_cfg",JSON.stringify(cfg));
 }
 document.querySelectorAll("[data-k]").forEach(el=>{el.onclick=()=>{cfg[el.dataset.k]=el.dataset.v;applyCfg()}});
@@ -420,22 +437,40 @@ function sideOf(t){
 }
 
 /* ---------- conversation rendering (tabletop aware) ---------- */
-const newTurn=side=>{const t={side,inT:"",outT:"",els:[],key:"",done:false};allTurns.push(t);return t};
+const newTurn=side=>{const t={side,inT:"",outT:"",els:[],key:"",done:false,words:null,conf:-1,alts:null,peakLvl:0};allTurns.push(t);return t};
 function curTurn(){const now=Date.now();if(!turn||turn.done||now-tAct>3000)turn=newTurn(cfg.mode==="record"?forced:null);tAct=now;return turn}
 function mkB(panel,cls,label,end){
   const d=document.createElement("div");
   d.className="msg "+cls+(end?" end":" st");
   if(cls==="out"){
-    d.innerHTML='<small></small><span class="txt"></span><div class="acts"><button class="act" data-act="repeat" title="Listen again">🔁 Repeat</button><button class="act" data-act="slow" title="Speak slowly">🐢 0.75x</button><button class="act" data-act="star" title="Save phrase">★ Star</button><button class="act" data-act="big" title="Show fullscreen">⛶</button></div>';
+    d.innerHTML='<small><b class="lbl"></b><span class="sure" hidden></span></small><span class="txt"></span><div class="acts"><button class="act" data-act="repeat" title="Listen again">🔁 Repeat</button><button class="act" data-act="slow" title="Speak slowly">🐢 0.75x</button><button class="act" data-act="star" title="Save phrase">★ Star</button><button class="act" data-act="big" title="Show fullscreen">⛶</button></div>';
   } else {
-    d.innerHTML='<small></small><span class="txt"></span>';
+    d.innerHTML='<small><b class="lbl"></b><span class="sure" hidden></span></small><span class="txt"></span><div class="alts" hidden></div>';
   }
-  d.firstChild.textContent=label;
+  d.querySelector(".lbl").textContent=label;
   $(panel).appendChild(d);
   return d;
 }
 const SCR_TAG={han:"zh-Hans",kana:"ja",hangul:"ko",cyr:"ru",ar:"ar",dev:"hi",th:"th",gr:"el",he:"he",bn:"bn",ta:"ta",te:"te"};
 const guessTag=t=>{const s=scriptOf(t||"");return SCR_TAG[s]||L.c2||L.c1||"en"};
+function suretyMeta(t){
+  let tier="",badge="";
+  const hasWords=Array.isArray(t.words)&&t.words.length>0;
+  let minW=1;
+  if(hasWords){
+    for(const w of t.words){if(typeof w.c==="number"&&w.c>=0&&w.c<minW)minW=w.c}
+  }
+  if(typeof t.conf==="number"&&t.conf>=0){
+    const pct=Math.round(t.conf*100);
+    tier=t.conf>=0.80?"hi":t.conf>=0.55?"mid":"lo";
+    if(tier==="hi"&&minW<0.55)tier="mid";
+    badge=tier==="hi"?`${pct}% sure`:tier==="mid"?`${pct}% · check`:`${pct}% · unsure`;
+  }else if(engine==="gemini"&&t.done&&t.peakLvl>0){
+    if(t.peakLvl<0.10){tier="mid";badge="Quiet audio"}
+    else{tier="hi";badge="Clear audio"}
+  }
+  return{tier,badge};
+}
 function render(t){
   const k=(t.side||"x")+cfg.tabletop;
   if(t.key!==k){
@@ -447,19 +482,70 @@ function render(t){
     t.els=[t.i,t.o,t.i2,t.o2].filter(Boolean);
   }
   const outTag=t.side==="me"?(L.c2||guessTag(t.outT)):t.side==="them"?(L.c1||"en"):guessTag(t.outT);
+  const{tier,badge}=cfg.surety?suretyMeta(t):{tier:"",badge:""};
+  const inTag=(t.side==="them"?L.c2:L.c1)||"";
+  const cjk=inTag.startsWith("zh")||inTag.startsWith("ja");
   const set=(e,x)=>{
-    if(e){
-      const s=e.querySelector(".txt")||e.lastChild;
-      if(s)s.textContent=x;
-      e.hidden=!x;
-      if(e.classList.contains("out")&&x){
-        e.dataset.tag=outTag;
-        const starBtn=e.querySelector('[data-act="star"]');
-        if(starBtn){
-          const st=isStarred(x);
-          starBtn.classList.toggle("starred",st);
-          starBtn.textContent=st?"★ Saved":"★ Star";
+    if(!e)return;
+    const s=e.querySelector(".txt"),isOut=e.classList.contains("out");
+    e.hidden=!x;
+    if(!x)return;
+    e.classList.toggle("c-mid",tier==="mid");
+    e.classList.toggle("c-lo",tier==="lo");
+    const sb=e.querySelector(".sure");
+    if(sb){
+      if(badge){sb.hidden=false;sb.textContent=badge;sb.className="sure "+tier}
+      else{sb.hidden=true}
+    }
+    if(s){
+      s.className="txt";
+      if(!isOut&&cfg.surety&&Array.isArray(t.words)&&t.words.length){
+        s.textContent="";
+        t.words.forEach((w,idx)=>{
+          if(idx>0&&!cjk)s.appendChild(document.createTextNode(" "));
+          const sp=document.createElement("span");
+          const c=typeof w.c==="number"?w.c:-1;
+          sp.className=c<0?"w-hi":c>=0.80?"w-hi":c>=0.55?"w-mid":"w-lo";
+          sp.textContent=w.w;
+          s.appendChild(sp);
+        });
+      }else{
+        s.textContent=x;
+        if(cfg.surety&&(tier==="mid"||tier==="lo")&&( !isOut || tier==="lo" || t.conf>=0 )){
+          s.classList.add(tier==="lo"?"w-lo":"w-mid");
         }
+      }
+    }
+    if(!isOut){
+      const al=e.querySelector(".alts");
+      if(al){
+        al.textContent="";
+        if(cfg.surety&&engine==="local"&&Array.isArray(t.alts)&&t.alts.length&&t.conf>=0&&t.conf<0.85){
+          al.hidden=false;
+          al.appendChild(document.createTextNode("Or:"));
+          t.alts.forEach(a=>{
+            const b=document.createElement("button");
+            b.type="button";
+            b.textContent=a;
+            b.onclick=ev=>{
+              ev.stopPropagation();haptic("click");
+              t.inT=a;t.conf=-1;t.words=null;t.alts=null;render(t);
+              const me=t.side==="me",src=ml(me?L.c1:L.c2),tgt=ml(me?L.c2:L.c1),tag=me?L.c2:L.c1;
+              if(src===tgt){t.outT=a;render(t);if(cfg.speak)Android.speak(a,tag,1,1);return}
+              const reqId=String(++off.id);pendingReqs.set(reqId,{kind:"voice",turn:t,tag});
+              status("Translating…",true);Android.translate(reqId,a,src,tgt);
+            };
+            al.appendChild(b);
+          });
+        }else{al.hidden=true}
+      }
+    }else{
+      e.dataset.tag=outTag;
+      const starBtn=e.querySelector('[data-act="star"]');
+      if(starBtn){
+        const st=isStarred(x);
+        starBtn.classList.toggle("starred",st);
+        starBtn.textContent=st?"★ Saved":"★ Star";
       }
     }
   };
@@ -510,6 +596,7 @@ async function startMic(){
     const hush=(cfg.quiet&&((outCtx&&nextT+0.4>outCtx.currentTime)||ttsSpeaking))||Date.now()<chimeUntil;
     const live=!muted&&!hush&&(cfg.mode==="free"||recSide);
     lvl=live?Math.min(1,Math.sqrt(sum/(d.length/8))*9):0;
+    if(live&&turn&&!turn.done&&lvl>turn.peakLvl)turn.peakLvl=lvl;
     if(!live)return;
     const o=down(d);if(!o)return;
     send({realtimeInput:{audio:{data:b64(o.buffer),mimeType:"audio/pcm;rate=16000"}}});
@@ -583,7 +670,7 @@ async function onMsg(ev){
   if(o){const t=curTurn();t.outT+=o;if(!t.side){const s=sideOf(t.outT);if(s)t.side=s==="me"?"them":"me"}render(t)}
   if(sc.turnComplete){
     if(turn&&!turn.done&&turn.outT){playChime("done");haptic("done")}
-    if(turn)turn.done=true;
+    if(turn){turn.done=true;render(turn)}
     if(cfg.mode==="record")status("Tap You or Them to continue",true);
   }
 }
@@ -667,8 +754,18 @@ function offTap(side){
   Android.listen(side==="me"?L.c1:L.c2,1200,cfg.voice);
 }
 window.nativeEvent=(type,data)=>{
-  if(type!=="rms"&&type!=="partial"&&type!=="ofProgress"&&type!=="tts")dlog("native "+type+": "+String(data).slice(0,120));
+  if(type!=="rms"&&type!=="partial"&&type!=="ofProgress"&&type!=="tts"&&type!=="surety")dlog("native "+type+": "+String(data).slice(0,120));
   if(type==="tts"){ttsSpeaking=(data==="1");return}
+  if(type==="surety"){
+    if(turn){
+      const r=JSON.parse(data);
+      if(typeof r.conf==="number")turn.conf=r.conf;
+      if(Array.isArray(r.words))turn.words=r.words;
+      if(Array.isArray(r.alts))turn.alts=r.alts;
+      if(!r.partial)render(turn);
+    }
+    return;
+  }
   if(type==="selftest"){$("dbgLog").textContent=LOG.join("\n");$("dbgLog").scrollTop=1e9;return}
   if(type==="engine"){if(engine==="local"&&off.listening)status(data||(off.side==="me"?"Listening to you…":"Listening to them…"),true);return}
   if(type==="translated"){
@@ -696,7 +793,7 @@ window.nativeEvent=(type,data)=>{
   if(type==="packsDone"){$("pkStop").hidden=true;$("ofMsg").className="ok";$("ofMsg").textContent="All downloads finished ✓";$("ofBar").firstChild.style.width="100%";return}
   if(type==="error"&&engine!=="local"){haptic("error");status(data,false);return}
   if(engine!=="local")return;
-  if(type==="rms"){lvl=Math.max(0,Math.min(1,(parseFloat(data)+2)/12));return}
+  if(type==="rms"){lvl=Math.max(0,Math.min(1,(parseFloat(data)+2)/12));if(turn&&!turn.done&&lvl>turn.peakLvl)turn.peakLvl=lvl;return}
   if(type==="partial"&&turn){turn.inT=data;render(turn);return}
   if(type==="final"){
     off.listening=false;lvl=0;setBtns();
