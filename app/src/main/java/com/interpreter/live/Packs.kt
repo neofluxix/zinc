@@ -152,7 +152,7 @@ object Packs {
             val langs = listOf(c1, c2)
             val unsupported = langs.filter { TranslateLanguage.fromLanguageTag(mlCode(it)) == null }
             if (unsupported.isNotEmpty()) {
-                emit("ofFail", "Offline translation isn't available for ${unsupported.joinToString(", ")}. Use online Gemini mode for this language.")
+                emit("ofFail", "Offline packs aren't available for ${unsupported.joinToString(", ")}. Online translation still works with a Gemini key.")
                 return
             }
             val mlNeeded = langs.map { mlCode(it) }.toMutableSet().apply { add("en") }

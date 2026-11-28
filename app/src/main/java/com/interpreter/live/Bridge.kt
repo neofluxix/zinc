@@ -47,6 +47,8 @@ class Bridge(private val act: Activity, private val web: WebView) {
     private val voskModels = HashMap<String, Model>()
     private var tts: TextToSpeech? = null
     @Volatile private var ttsStatus = -1
+    @Volatile private var ttsGen = 0L
+    @Volatile private var activeTtsId = ""
     private val translators = HashMap<String, Translator>()
     private var lastRms = 0L
     @Volatile private var listenGen = 0
@@ -57,11 +59,19 @@ class Bridge(private val act: Activity, private val web: WebView) {
             ttsStatus = status
             if (status == TextToSpeech.SUCCESS) {
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) { emit("tts", "1") }
-                    override fun onDone(utteranceId: String?) { emit("tts", "0") }
+                    override fun onStart(utteranceId: String?) {
+                        if (utteranceId == activeTtsId) emit("tts", "1")
+                    }
+                    override fun onDone(utteranceId: String?) {
+                        if (utteranceId == activeTtsId) emit("tts", "0")
+                    }
                     @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) { emit("tts", "0") }
-                    override fun onError(utteranceId: String?, errorCode: Int) { emit("tts", "0") }
+                    override fun onError(utteranceId: String?) {
+                        if (utteranceId == activeTtsId) emit("tts", "0")
+                    }
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        if (utteranceId == activeTtsId) emit("tts", "0")
+                    }
                 })
             }
         }
@@ -125,6 +135,38 @@ class Bridge(private val act: Activity, private val web: WebView) {
     @JavascriptInterface
     fun cancelDownloads() { Packs.cancel = true }
 
+    @JavascriptInterface
+    fun isOnline(): Boolean = Packs.online(act)
+
+    private fun speechTag(tag: String): String = when (tag.lowercase(Locale.ROOT)) {
+        "zh-hans", "zh" -> "zh-CN"
+        "fil" -> "fil-PH"
+        else -> tag
+    }
+
+    private fun speakCandidates(tag: String): List<Locale> {
+        val norm = speechTag(tag)
+        val tags = linkedSetOf(tag, norm)
+        val b = tag.substringBefore('-').lowercase(Locale.ROOT)
+        if (b == "fil" || b == "tl") {
+            tags.add("fil-PH"); tags.add("tl-PH"); tags.add("tl")
+        } else if (b == "zh") {
+            tags.add("zh-CN"); tags.add("zh")
+        }
+        tags.add(b)
+        return tags.map { Locale.forLanguageTag(it) }
+    }
+
+    private fun releaseAudioInputs() {
+        vosk?.let { try { it.shutdown() } catch (_: Exception) { } }
+        vosk = null
+        recognizer?.let {
+            try { it.cancel() } catch (_: Exception) { }
+            try { it.destroy() } catch (_: Exception) { }
+        }
+        recognizer = null
+    }
+
     // ---------------------------------------------------------------- listening
 
     @JavascriptInterface
@@ -132,34 +174,42 @@ class Bridge(private val act: Activity, private val web: WebView) {
         val gen = ++listenGen
         main.post {
             if (gen != listenGen || dead) return@post
-            vosk?.let { try { it.shutdown() } catch (_: Exception) { } }
-            vosk = null
-            recognizer?.let { try { it.destroy() } catch (_: Exception) { } }
-            recognizer = null
+            releaseAudioInputs()
             if (act.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 emit("error", "Microphone permission is off.")
                 return@post
             }
             val key = Packs.voskKey(tag)
             val vOk = Packs.voskReady(act, key) && !voskDisabled()
-            val gOk = Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act)
+            val onlineNow = Packs.online(act)
+            val sysOk = SpeechRecognizer.isRecognitionAvailable(act)
+            val onDevOk = Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isOnDeviceRecognitionAvailable(act)
             when {
                 pref == "zinc" && vOk -> listenVosk(key, tag, silenceMs, gen)
-                pref == "google" -> if (gOk) listenGoogle(tag, silenceMs, null, gen) else listenSystem(tag, silenceMs, gen)
-                gOk -> listenGoogle(tag, silenceMs, if (vOk) key else null, gen)
+                pref == "google" -> if (onDevOk) listenGoogle(tag, silenceMs, null, gen) else listenSystem(tag, silenceMs, false, null, false, gen)
+                onlineNow && sysOk -> listenSystem(tag, silenceMs, false, if (vOk) key else null, onDevOk, gen)
+                onDevOk -> listenGoogle(tag, silenceMs, if (vOk) key else null, gen)
                 vOk -> listenVosk(key, tag, silenceMs, gen)
-                else -> listenSystem(tag, silenceMs, gen)
+                sysOk -> listenSystem(tag, silenceMs, true, null, false, gen)
+                else -> emit("error", "No speech recognizer on this phone.")
             }
         }
     }
 
+    /** Stops the active recognizer so any partial speech finalizes cleanly. */
     @JavascriptInterface
     fun stopListening() {
-        listenGen++
         main.post {
             vosk?.let { try { it.stop() } catch (_: Exception) { } }
             recognizer?.let { try { it.stopListening() } catch (_: Exception) { } }
         }
+    }
+
+    /** Aborts listening immediately without emitting a final result. */
+    @JavascriptInterface
+    fun cancelListening() {
+        listenGen++
+        main.post { releaseAudioInputs() }
     }
 
     private fun listenVosk(key: String, tag: String, silenceMs: Int, gen: Int) {
@@ -193,7 +243,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
                         try { svc.shutdown() } catch (_: Exception) { }
                         return@post
                     }
-                    try { runVosk(svc, tag, silenceMs) }
+                    try { runVosk(svc, tag, silenceMs, gen) }
                     catch (t: Throwable) {
                         try { svc.shutdown() } catch (_: Exception) { }
                         emit("error", "Couldn't start the microphone: ${t.message}")
@@ -206,7 +256,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
         }
     }
 
-    private fun runVosk(svc: SpeechService, tag: String, silenceMs: Int) {
+    private fun runVosk(svc: SpeechService, tag: String, silenceMs: Int, gen: Int) {
         vosk = svc
         val sb = StringBuilder()
         val accWords = JSONArray()
@@ -252,6 +302,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
             val avgConf = if (cnt > 0) sum / cnt else -1.0
             val t = clean((sb.toString() + " " + extra).trim())
             close()
+            if (gen != listenGen || dead) return
             if (t.isNotEmpty()) {
                 emit("surety", JSONObject().put("partial", false).put("conf", avgConf).put("words", accWords).toString())
             }
@@ -260,20 +311,21 @@ class Bridge(private val act: Activity, private val web: WebView) {
 
         val tick = object : Runnable {
             override fun run() {
-                if (finished) return
+                if (finished || gen != listenGen || dead) return
                 val idle = System.currentTimeMillis() - lastAct
                 val heard = sb.isNotEmpty() || lastPartial.isNotEmpty()
-                if ((heard && idle > silenceMs) || (!heard && idle > 9000)) {
+                if ((heard && idle > silenceMs) || (!heard && idle > 7000)) {
                     try { svc.stop() } catch (_: Exception) { }
-                    main.postDelayed({ finish("") }, 1500)
+                    main.postDelayed({ finish("") }, 450)
                     return
                 }
-                main.postDelayed(this, 150)
+                main.postDelayed(this, 100)
             }
         }
 
         svc.startListening(object : VoskListener {
             override fun onPartialResult(hypothesis: String?) {
+                if (finished || gen != listenGen || dead) return
                 val obj = JSONObject(hypothesis ?: "{}")
                 val p = obj.optString("partial")
                 if (p.isNotEmpty() && p != lastPartial) {
@@ -285,6 +337,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 }
             }
             override fun onResult(hypothesis: String?) {
+                if (finished || gen != listenGen || dead) return
                 val obj = JSONObject(hypothesis ?: "{}")
                 val t = obj.optString("text")
                 for (item in extractWords(obj, "result")) accWords.put(item)
@@ -302,97 +355,167 @@ class Bridge(private val act: Activity, private val web: WebView) {
             }
             override fun onError(exception: Exception?) {
                 close()
-                emit("error", "Voice engine error: ${exception?.message}")
+                if (gen == listenGen && !dead) emit("error", "Voice engine error: ${exception?.message}")
             }
             override fun onTimeout() { finish("") }
         })
-        main.postDelayed(tick, 400)
+        main.postDelayed(tick, 300)
     }
 
-    // Fallback for languages that have no bundled voice pack: Android's own recognizer.
-
-    private fun first(b: Bundle?): String =
-        b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+    // System & Google on-device SpeechRecognizer runners.
 
     private fun errText(e: Int): String = when (e) {
         SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that. Try again."
         12, 13 -> "No offline voice for this language. Connect to the internet for this one, or pick a supported language."
         SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT, SpeechRecognizer.ERROR_SERVER ->
-            "This language needs internet for voice input."
+            "Network issue with voice input."
         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is off."
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer is busy. Tap again."
         else -> "Speech recognition error ($e)."
     }
 
-    private fun listenSystem(tag: String, silenceMs: Int, gen: Int) {
+    private fun listenSystem(
+        tag: String, silenceMs: Int, preferOffline: Boolean,
+        fallbackKey: String?, fallbackOnDev: Boolean, gen: Int, retryCount: Int = 0
+    ) {
         if (gen != listenGen || dead) return
         if (!SpeechRecognizer.isRecognitionAvailable(act)) {
-            emit("error", "No speech recognizer on this phone.")
+            if (fallbackOnDev) listenGoogle(tag, silenceMs, fallbackKey, gen)
+            else if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs, gen)
+            else emit("error", "No speech recognizer on this phone.")
             return
         }
         emit("which", "system")
-        runRecognizer(SpeechRecognizer.createSpeechRecognizer(act), tag, silenceMs, null, false, gen)
+        runRecognizer(
+            SpeechRecognizer.createSpeechRecognizer(act), tag, silenceMs,
+            preferOffline, fallbackKey, google = false, fallbackOnDev = fallbackOnDev,
+            gen = gen, retryCount = retryCount
+        )
     }
 
-    /** Google's on-device recognizer (Android 13+). Much better with accents than the bundled engine. */
-    private fun listenGoogle(tag: String, silenceMs: Int, fallbackKey: String?, gen: Int) {
+    /** Google's on-device recognizer (Android 13+). Fallback when offline or system service is unavailable. */
+    private fun listenGoogle(tag: String, silenceMs: Int, fallbackKey: String?, gen: Int, retryCount: Int = 0) {
         if (gen != listenGen || dead) return
         try {
             emit("which", "google")
-            runRecognizer(SpeechRecognizer.createOnDeviceSpeechRecognizer(act), tag, silenceMs, fallbackKey, true, gen)
+            runRecognizer(
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(act), tag, silenceMs,
+                preferOffline = true, fallbackKey = fallbackKey, google = true,
+                fallbackOnDev = false, gen = gen, retryCount = retryCount
+            )
         } catch (e: Exception) {
-            if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs, gen) else listenSystem(tag, silenceMs, gen)
+            if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs, gen)
+            else listenSystem(tag, silenceMs, true, null, false, gen)
         }
     }
 
-    private fun runRecognizer(r: SpeechRecognizer, tag: String, silenceMs: Int, fallbackKey: String?, google: Boolean, gen: Int) {
+    private fun runRecognizer(
+        r: SpeechRecognizer, tag: String, silenceMs: Int, preferOffline: Boolean,
+        fallbackKey: String?, google: Boolean, fallbackOnDev: Boolean, gen: Int, retryCount: Int = 0
+    ) {
         recognizer = r
         var done = false
+        var ended = false
+        var endedAt = 0L
+        var lastPartial = ""
+        var lastPartialAt = 0L
+        val cjk = tag.startsWith("zh") || tag.startsWith("ja")
+        val watchdogHolder = arrayOfNulls<Runnable>(1)
+
         fun release() {
+            watchdogHolder[0]?.let { main.removeCallbacks(it) }
             if (recognizer === r) recognizer = null
             try { r.destroy() } catch (_: Exception) { }
         }
+        fun finalizeText(txt: String, conf: Float, alts: JSONArray) {
+            if (done) return
+            done = true
+            main.post { release() }
+            if (gen != listenGen || dead) return
+            if (txt.isNotEmpty()) {
+                emit("surety", JSONObject().put("partial", false).put("conf", conf.toDouble()).put("alts", alts).toString())
+            }
+            emit("final", txt)
+        }
+
+        // Nudge SpeechRecognizer to finalize promptly when partial text goes quiet, preventing multi-second OEM hangs.
+        val watchdog = object : Runnable {
+            override fun run() {
+                if (done || gen != listenGen || dead) return
+                val now = System.currentTimeMillis()
+                if (!ended && lastPartial.isNotEmpty() && (now - lastPartialAt) >= silenceMs + 350L) {
+                    ended = true
+                    endedAt = now
+                    try { r.stopListening() } catch (_: Exception) { }
+                } else if (ended && endedAt > 0L && lastPartial.isNotEmpty() && (now - endedAt) >= 1200L) {
+                    finalizeText(lastPartial, -1f, JSONArray())
+                    return
+                }
+                main.postDelayed(this, 120)
+            }
+        }
+        watchdogHolder[0] = watchdog
+
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {
-                if (done) return
+                if (done || gen != listenGen || dead) return
                 val now = System.currentTimeMillis()
                 if (now - lastRms > 80) { lastRms = now; emit("rms", rmsdB.toString()) }
             }
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
+            override fun onEndOfSpeech() {
+                if (!ended) { ended = true; endedAt = System.currentTimeMillis() }
+            }
             override fun onError(error: Int) {
                 if (done) return
-                done = true
-                // Anything other than "didn't hear you" / audio / busy / permission: hand over to another engine instead of giving up.
+                if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && retryCount == 0 && gen == listenGen && !dead) {
+                    done = true
+                    main.post {
+                        release()
+                        main.postDelayed({
+                            if (gen != listenGen || dead) return@postDelayed
+                            if (google) listenGoogle(tag, silenceMs, fallbackKey, gen, retryCount = 1)
+                            else listenSystem(tag, silenceMs, preferOffline, fallbackKey, fallbackOnDev, gen, retryCount = 1)
+                        }, 180)
+                    }
+                    return
+                }
+                if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && lastPartial.isNotBlank()) {
+                    finalizeText(lastPartial, -1f, JSONArray())
+                    return
+                }
                 val benign = error == SpeechRecognizer.ERROR_AUDIO ||
                     error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
                     error == SpeechRecognizer.ERROR_NO_MATCH ||
                     error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
                     error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
-                if (google && !benign) {
+                if (!benign && (fallbackOnDev || fallbackKey != null)) {
+                    done = true
                     main.post {
                         release()
                         if (gen != listenGen || dead) return@post
                         emit("engine", "Switching voice engine…")
-                        if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs, gen) else listenSystem(tag, silenceMs, gen)
+                        if (fallbackOnDev) listenGoogle(tag, silenceMs, fallbackKey, gen)
+                        else if (fallbackKey != null) listenVosk(fallbackKey, tag, silenceMs, gen)
                     }
+                    return
+                }
+                done = true
+                main.post { release() }
+                if (gen != listenGen || dead) return
+                if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    emit("final", "")
                 } else {
-                    main.post { release() }
-                    if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                        emit("final", "")
-                    } else {
-                        emit("error", errText(error))
-                    }
+                    emit("error", errText(error))
                 }
             }
             override fun onResults(results: Bundle?) {
-                if (done) return
-                done = true
                 val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val scores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
-                val txt = list?.firstOrNull() ?: ""
+                val raw = list?.firstOrNull()?.trim().orEmpty()
+                val txt = raw.ifBlank { lastPartial }
                 val conf = scores?.firstOrNull()?.takeIf { it in 0f..1f } ?: -1f
                 val alts = JSONArray()
                 if (list != null) {
@@ -401,16 +524,24 @@ class Bridge(private val act: Activity, private val web: WebView) {
                         if (!a.isNullOrBlank() && a != txt) alts.put(a)
                     }
                 }
-                main.post { release() }
-                if (txt.isNotEmpty()) {
-                    emit("surety", JSONObject().put("partial", false).put("conf", conf.toDouble()).put("alts", alts).toString())
-                }
-                emit("final", txt)
+                finalizeText(txt, conf, alts)
             }
             override fun onPartialResults(partialResults: Bundle?) {
-                if (done) return
-                val t = first(partialResults)
-                if (t.isNotEmpty()) emit("partial", t)
+                if (done || gen != listenGen || dead) return
+                val stable = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+                val unstable = partialResults?.getStringArrayList("android.speech.extra.UNSTABLE_TEXT")?.firstOrNull()?.trim().orEmpty()
+                val combined = when {
+                    stable.isEmpty() -> unstable
+                    unstable.isEmpty() -> stable
+                    stable.endsWith(unstable, ignoreCase = true) -> stable
+                    cjk -> stable + unstable
+                    else -> "$stable $unstable"
+                }
+                if (combined.isNotEmpty() && combined != lastPartial) {
+                    lastPartial = combined
+                    lastPartialAt = System.currentTimeMillis()
+                    emit("partial", combined)
+                }
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
@@ -418,13 +549,14 @@ class Bridge(private val act: Activity, private val web: WebView) {
             r.startListening(
                 Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                     .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechTag(tag))
                     .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                    .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, google || !Packs.online(act))
+                    .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
                     .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs.toLong())
                     .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs.toLong())
             )
+            main.postDelayed(watchdog, 250)
         } catch (e: Exception) {
             done = true
             release()
@@ -443,7 +575,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 r.triggerModelDownload(
                     Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                         .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechTag(tag))
                 )
                 main.postDelayed({ r.destroy() }, 4000)
             } catch (_: Exception) { }
@@ -452,13 +584,23 @@ class Bridge(private val act: Activity, private val web: WebView) {
 
     // ---------------------------------------------------------------- translation
 
+    private fun emitTranslateError(id: String, msg: String) {
+        emit("translateError", JSONObject().put("id", id).put("error", msg).toString())
+    }
+
     @JavascriptInterface
     fun translate(id: String, text: String, src: String, tgt: String) {
         main.post {
             try {
-                val tr = translators.getOrPut("$src>$tgt") {
+                val srcLang = TranslateLanguage.fromLanguageTag(src)
+                val tgtLang = TranslateLanguage.fromLanguageTag(tgt)
+                if (srcLang == null || tgtLang == null) {
+                    emitTranslateError(id, "Offline translation isn't available for $src to $tgt.")
+                    return@post
+                }
+                val tr = translators.getOrPut("$srcLang>$tgtLang") {
                     Translation.getClient(
-                        TranslatorOptions.Builder().setSourceLanguage(src).setTargetLanguage(tgt).build()
+                        TranslatorOptions.Builder().setSourceLanguage(srcLang).setTargetLanguage(tgtLang).build()
                     )
                 }
                 tr.downloadModelIfNeeded(DownloadConditions.Builder().build())
@@ -467,11 +609,11 @@ class Bridge(private val act: Activity, private val web: WebView) {
                             .addOnSuccessListener { out ->
                                 emit("translated", JSONObject().put("id", id).put("text", out).toString())
                             }
-                            .addOnFailureListener { emit("error", "Translation failed: ${it.message}") }
+                            .addOnFailureListener { emitTranslateError(id, "Translation failed: ${it.message}") }
                     }
-                    .addOnFailureListener { emit("error", "Translation pack missing and no internet.") }
+                    .addOnFailureListener { emitTranslateError(id, "Translation pack missing and no internet.") }
             } catch (e: Exception) {
-                emit("error", "Unsupported language pair: $src to $tgt")
+                emitTranslateError(id, "Unsupported language pair: $src to $tgt")
             }
         }
     }
@@ -486,14 +628,22 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 emit("error", "Text-to-speech engine is not ready yet.")
                 return@post
             }
-            val res = t.setLanguage(Locale.forLanguageTag(tag))
-            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+            val ok = speakCandidates(tag).any { loc ->
+                val res = t.setLanguage(loc)
+                res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED
+            }
+            if (!ok) {
                 emit("error", "This phone has no voice installed for that language (Settings, Text-to-speech).")
                 return@post
             }
+            val uid = "u_${++ttsGen}"
+            activeTtsId = uid
             t.setSpeechRate(rate)
             t.setPitch(pitch)
-            if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u") == TextToSpeech.ERROR) emit("tts", "0")
+            if (t.speak(text, TextToSpeech.QUEUE_FLUSH, null, uid) == TextToSpeech.ERROR) {
+                activeTtsId = ""
+                emit("tts", "0")
+            }
         }
     }
 
@@ -598,8 +748,8 @@ class Bridge(private val act: Activity, private val web: WebView) {
                 for (c in listOf(c1, c2).distinct()) {
                     val msg = if (ttsStatus != TextToSpeech.SUCCESS) "TTS engine not ready ($ttsStatus)"
                     else {
-                        val r = tts?.isLanguageAvailable(Locale.forLanguageTag(c)) ?: -2
-                        if (r >= 0) "available" else "NOT installed (Settings, Text-to-speech)"
+                        val avail = speakCandidates(c).any { (tts?.isLanguageAvailable(it) ?: -2) >= 0 }
+                        if (avail) "available" else "NOT installed (Settings, Text-to-speech)"
                     }
                     out("Voice output $c: $msg")
                 }
@@ -612,7 +762,7 @@ class Bridge(private val act: Activity, private val web: WebView) {
     }
 
     @JavascriptInterface
-    fun stopSpeaking() { main.post { tts?.stop(); emit("tts", "0") } }
+    fun stopSpeaking() { main.post { activeTtsId = ""; tts?.stop(); emit("tts", "0") } }
 
     fun shutdown() {
         dead = true
